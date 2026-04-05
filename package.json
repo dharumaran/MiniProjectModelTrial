@@ -1,0 +1,8 @@
+{
+  "name": "vigilauth-main",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev:auto": "node dev-auto-restart.js"
+  }
+}
