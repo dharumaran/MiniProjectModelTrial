@@ -7,8 +7,8 @@ from pathlib import Path
 from lstm_model import LSTMClassifier
 
 ROOT_DIR = Path(__file__).resolve().parent
-SVM_SEQ_PATH = ROOT_DIR.parent / "svm_seq_model.pkl"
-SVM_STAT_PATH = ROOT_DIR.parent / "svm_stat_model.pkl"
+SVM_SEQ_PATH = ROOT_DIR.parent / "tier_one_svm.pkl"
+SVM_STAT_PATH = ROOT_DIR.parent / "tier_two_svm.pkl"
 LSTM_PATH = ROOT_DIR / "lstm_classifier.pt"
 TEMP_INPUT_PATH = ROOT_DIR / "temp_input.csv"
 
