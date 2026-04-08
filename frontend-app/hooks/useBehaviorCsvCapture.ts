@@ -4,6 +4,7 @@ import { Accelerometer, Gyroscope } from "expo-sensors";
 import { getSession } from "../utils/session";
 import {
   appendBehaviorCsvRow,
+  flushBehaviorCsvRows,
   getBehaviorCsvPath,
   initBehaviorCsvFile,
 } from "../utils/behaviorCsvLogger";
@@ -25,6 +26,7 @@ type TouchPayload = {
 };
 
 const SENSOR_INTERVAL_MS = 100;
+const FLUSH_INTERVAL_MS = 1000;
 
 let captureReady = false;
 let activeSessionId = "";
@@ -88,6 +90,7 @@ export default function useBehaviorCsvCapture() {
 
   useEffect(() => {
     let mounted = true;
+    let flushInterval: ReturnType<typeof setInterval> | null = null;
 
     const stopCapture = () => {
       if (!isCapturingRef.current) {
@@ -100,6 +103,13 @@ export default function useBehaviorCsvCapture() {
       gyroSubRef.current = null;
       isCapturingRef.current = false;
       captureReady = false;
+      if (flushInterval) {
+        clearInterval(flushInterval);
+        flushInterval = null;
+      }
+      void flushBehaviorCsvRows().catch(() => {
+        // Ignore flush failures during app shutdown transitions.
+      });
     };
 
     const startCapture = (newSession: boolean) => {
@@ -127,6 +137,12 @@ export default function useBehaviorCsvCapture() {
       });
 
       isCapturingRef.current = true;
+
+      flushInterval = setInterval(() => {
+        void flushBehaviorCsvRows().catch(() => {
+          // Ignore periodic flush failures and keep capture running.
+        });
+      }, FLUSH_INTERVAL_MS);
     };
 
     const setup = async () => {
@@ -161,7 +177,14 @@ export default function useBehaviorCsvCapture() {
     return () => {
       mounted = false;
       appStateSubscription.remove();
+      if (flushInterval) {
+        clearInterval(flushInterval);
+        flushInterval = null;
+      }
       stopCapture();
+      void flushBehaviorCsvRows().catch(() => {
+        // Ignore final cleanup flush failures.
+      });
     };
   }, []);
 }

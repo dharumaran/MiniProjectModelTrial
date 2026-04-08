@@ -17,4 +17,3 @@ export async function getContinuousReauthRecord() {
 export async function clearContinuousReauthRecord() {
   await deleteFromSecureStore(REAUTH_KEY);
 }
-

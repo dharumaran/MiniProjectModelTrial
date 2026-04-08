@@ -1,35 +1,38 @@
 const express = require("express");
+const { writeTempInputCsv, ensureTempInputCsvExists } = require("../utils/tempInputCsv");
+
 const router = express.Router();
-const fs = require("fs");
-const path = require("path");
 
-// Route to save the behavior data to a CSV file
 router.post("/behavior", async (req, res) => {
-  const { session } = req.body;
+  try {
+    const { rowCount, inputPath } = writeTempInputCsv(req.body.session);
+    ensureTempInputCsvExists();
 
-  // Prepare CSV headers and rows
-  const featureHeaders = "X,Y,Pressure,Duration,Orientation,Size\n";
-  const rows = session.map(
-    (d) =>
-      `${d.X},${d.Y},${d.Pressure || 0.5},${d.Duration || 120},${
-        d.Orientation || 0
-      },${d.Size || 0.5}`
-  );
-
-  const csvData = featureHeaders + rows.join("\n");
-
-  // Path to the CSV file where the behavior data will be saved
-  const inputPath = path.join(__dirname, "../ml/temp_input.csv");
-
-  // Write to the file
-  fs.writeFileSync(inputPath, csvData, (err) => {
-    if (err) {
-      return res.status(500).json({ message: "Error saving data" });
+    if (!rowCount) {
+      console.warn("[record-session] session received with no rows; header file ensured");
+      return res.status(200).json({
+        message: "No session rows received. temp_input.csv header is ready.",
+        rowCount: 0,
+        inputPath,
+      });
     }
-    return res.status(200).json({ message: "Data saved successfully!" });
-  });
 
-  return res.status(200).json({ message: "Behavior data saved successfully!" });
+    console.log(
+      `[record-session] temp_input.csv updated with ${rowCount} rows at ${inputPath}`
+    );
+
+    return res.status(200).json({
+      message: "Behavior data saved successfully.",
+      rowCount,
+      inputPath,
+    });
+  } catch (error) {
+    console.error("[record-session] failed to update temp_input.csv", error);
+    return res.status(500).json({
+      message: "Error saving data.",
+      detail: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
 });
 
 module.exports = router;

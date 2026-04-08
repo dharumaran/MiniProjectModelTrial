@@ -20,6 +20,7 @@ let publicMirrorSafUri: string | null = null;
 let attemptedPublicMirrorInSession = false;
 let writeQueue: Promise<void> = Promise.resolve();
 let rowsSinceMirrorRetry = 0;
+let pendingLines: string[] = [];
 
 type CsvRowInput = {
   timestamp: number;
@@ -72,19 +73,27 @@ async function ensureHeader(path: string) {
   }
 }
 
-async function appendLineEnsuringFile(path: string, line: string) {
+async function appendLinesEnsuringFile(path: string, lines: string[]) {
+  if (lines.length === 0) {
+    return;
+  }
+
   const info = await FileSystem.getInfoAsync(path);
+  const contentToAppend = `${lines.join("\n")}\n`;
+
   if (!info.exists) {
-    await FileSystem.writeAsStringAsync(path, `${CSV_HEADER}${line}\n`, {
+    await FileSystem.writeAsStringAsync(path, `${CSV_HEADER}${contentToAppend}`, {
       encoding: FileSystem.EncodingType.UTF8,
     });
     return;
   }
 
   await ensureHeader(path);
-  await FileSystem.writeAsStringAsync(path, `${line}\n`, {
+  const existingContent = await FileSystem.readAsStringAsync(path, {
     encoding: FileSystem.EncodingType.UTF8,
-    append: true,
+  });
+  await FileSystem.writeAsStringAsync(path, `${existingContent}${contentToAppend}`, {
+    encoding: FileSystem.EncodingType.UTF8,
   });
 }
 
@@ -251,47 +260,64 @@ export async function getBehaviorCsvPath() {
 }
 
 export async function appendBehaviorCsvRow(row: CsvRowInput) {
+  const line = [
+    row.timestamp.toString(),
+    escapeCsv(row.userId),
+    escapeCsv(row.sessionId),
+    row.sensorType,
+    formatNumber(row.x),
+    formatNumber(row.y),
+    formatNumber(row.z),
+    formatNumber(row.touchX),
+    formatNumber(row.touchY),
+    formatNumber(row.pageX),
+    formatNumber(row.pageY),
+    row.touchAction ? escapeCsv(row.touchAction) : "",
+  ].join(",");
+
+  pendingLines.push(line);
+}
+
+export async function flushBehaviorCsvRows() {
   writeQueue = writeQueue
     .catch(() => {
       // Keep queue alive after transient failures.
     })
     .then(async () => {
-    await ensureInitialized();
-    try {
-      await ensurePublicMirrorReady();
-    } catch {
-      publicMirrorSafUri = null;
-      attemptedPublicMirrorInSession = false;
-    }
-    await maybeRetryPublicMirrorSetup();
+      if (pendingLines.length === 0) {
+        return;
+      }
 
-    const line = [
-      row.timestamp.toString(),
-      escapeCsv(row.userId),
-      escapeCsv(row.sessionId),
-      row.sensorType,
-      formatNumber(row.x),
-      formatNumber(row.y),
-      formatNumber(row.z),
-      formatNumber(row.touchX),
-      formatNumber(row.touchY),
-      formatNumber(row.pageX),
-      formatNumber(row.pageY),
-      row.touchAction ? escapeCsv(row.touchAction) : "",
-    ].join(",");
+      const linesToWrite = pendingLines;
+      pendingLines = [];
 
-    await appendLineEnsuringFile(APP_MODEL_PATH, line);
-
-    if (publicMirrorSafUri) {
       try {
-        await appendLineEnsuringFile(publicMirrorSafUri, line);
+        await ensureInitialized();
+        await ensurePublicMirrorReady();
       } catch {
         publicMirrorSafUri = null;
         attemptedPublicMirrorInSession = false;
-        await deleteFromSecureStore(SAF_BANK_DIR_URI_KEY);
-        await deleteFromSecureStore(SAF_FILE_URI_KEY);
       }
-    }
+
+      try {
+        await maybeRetryPublicMirrorSetup();
+
+        await appendLinesEnsuringFile(APP_MODEL_PATH, linesToWrite);
+
+        if (publicMirrorSafUri) {
+          try {
+            await appendLinesEnsuringFile(publicMirrorSafUri, linesToWrite);
+          } catch {
+            publicMirrorSafUri = null;
+            attemptedPublicMirrorInSession = false;
+            await deleteFromSecureStore(SAF_BANK_DIR_URI_KEY);
+            await deleteFromSecureStore(SAF_FILE_URI_KEY);
+          }
+        }
+      } catch (error) {
+        pendingLines = [...linesToWrite, ...pendingLines];
+        throw error;
+      }
     });
 
   await writeQueue;

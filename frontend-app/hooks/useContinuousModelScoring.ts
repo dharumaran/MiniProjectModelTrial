@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { apiFetch } from "../utils/api";
+import { apiFetch, getCurrentApiBaseUrl } from "../utils/api";
 import {
   getContinuousModelEvents,
   getContinuousModelTotalSamples,
@@ -70,6 +70,16 @@ export default function useContinuousModelScoring() {
 
       requestInFlightRef.current = true;
       markModelConfidenceChecking();
+      if (__DEV__) {
+        console.log(
+          "[predict] sending continuous scoring request",
+          JSON.stringify({
+            sampleWindow: currentEvents.length,
+            totalSamples,
+            apiBaseUrl: getCurrentApiBaseUrl(),
+          })
+        );
+      }
       void apiFetch<ModelConfidenceResponse>("/predict", {
         method: "POST",
         body: JSON.stringify({ session: currentEvents }),
@@ -77,11 +87,25 @@ export default function useContinuousModelScoring() {
         .then((response) => {
           lastSentTotalRef.current = totalSamples;
           lastSentAtRef.current = Date.now();
+          if (__DEV__) {
+            console.log(
+              "[predict] scoring response received",
+              JSON.stringify({
+                svm1_score: response.svm1_score,
+                svm2_score: response.svm2_score,
+                lstm_score: response.lstm_score,
+                risk: response.risk,
+              })
+            );
+          }
           setModelConfidence(response);
         })
         .catch((error) => {
           // Keep this visible while tuning continuous auth in dev.
-          console.warn("Continuous model scoring failed:", error);
+          console.warn(
+            "[predict] continuous model scoring failed:",
+            error instanceof Error ? error.message : error
+          );
           resetModelConfidenceStatus();
         })
         .finally(() => {
