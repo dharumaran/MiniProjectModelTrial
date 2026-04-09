@@ -17,7 +17,7 @@ router.post("/", async (req, res) => {
     `[predict] received ${rowCount} rows and updated temp_input.csv at ${inputPath}`
   );
 
-  const py = spawn("python", ["ml/predict_multi.py"], {
+  const py = spawn("python", ["ml/predict_tiered.py"], {
     cwd: path.join(__dirname, ".."),
   });
 
@@ -62,20 +62,27 @@ router.post("/", async (req, res) => {
       });
     }
 
+    const svm_mean = (svm1_score + svm2_score) / 2;
+    const svm_agreement = Math.max(0, 1 - Math.abs(svm1_score - svm2_score));
+    const svm_reliability = Math.max(0, Math.min(1, (svm_agreement - 0.2) / 0.8));
+    const svm_weight = 0.25 * svm_reliability;
+    const lstm_weight = 1 - svm_weight;
+    const fused_score = lstm_score * lstm_weight + svm_mean * svm_weight;
+
     let risk = "low";
-    if (lstm_score < 0.4) {
+    if ((lstm_score < 0.25 && fused_score < 0.35) || fused_score < 0.3) {
       risk = "high";
-    } else if (svm1_score < 0.4 && svm2_score < 0.4) {
+    } else if (fused_score < 0.45) {
       risk = "medium";
-    } else if (svm1_score < 0.4) {
+    } else if (fused_score < 0.55) {
       risk = "low-medium";
     }
 
     console.log(
-      `[predict] scores svm1=${svm1_score.toFixed(4)} svm2=${svm2_score.toFixed(4)} lstm=${lstm_score.toFixed(4)} risk=${risk}`
+      `[predict] scores svm1=${svm1_score.toFixed(4)} svm2=${svm2_score.toFixed(4)} lstm=${lstm_score.toFixed(4)} fused=${fused_score.toFixed(4)} risk=${risk}`
     );
 
-    return res.json({ svm1_score, svm2_score, lstm_score, risk });
+    return res.json({ svm1_score, svm2_score, lstm_score, fused_score, risk });
   });
 });
 

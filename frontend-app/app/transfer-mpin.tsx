@@ -70,9 +70,14 @@ export default function TransferMpin() {
         });
         publishModelConfidence(riskResponse);
 
-        const isTier2Low =
+        const isSvmTierLow =
           riskResponse.svm1_score < SVM_LOW_THRESHOLD &&
           riskResponse.svm2_score < SVM_LOW_THRESHOLD;
+        const isTier2Low =
+          isSvmTierLow &&
+          (riskResponse.lstm_score < 0.45 ||
+            riskResponse.risk === "high" ||
+            riskResponse.risk === "medium");
 
         if (isTier2Low) {
           const reauth = await getContinuousReauthRecord();
@@ -104,7 +109,10 @@ export default function TransferMpin() {
 
           // Passed Tier 3: clear reauth marker and proceed.
           await clearContinuousReauthRecord();
-        } else if (riskResponse.svm1_score < SVM_LOW_THRESHOLD) {
+        } else if (
+          riskResponse.svm1_score < SVM_LOW_THRESHOLD &&
+          riskResponse.lstm_score < 0.5
+        ) {
           Alert.alert("Notice", "Unusual activity detected. Proceeding with caution.");
           // Continue to transfer
         }

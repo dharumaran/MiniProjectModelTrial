@@ -7,14 +7,22 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn import svm
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
+from feature_pipeline import (
+    FEATURE_COLS,
+    NUM_FEATURES,
+    SEQUENCE_LENGTH,
+    clamp01,
+    extract_stat_features,
+    normalize_session,
+)
 from lstm_model import LSTMClassifier
 
-SEQUENCE_LENGTH = 50
-FEATURE_COLS = ["X", "Y", "Pressure", "Duration", "Orientation", "Size"]
-NUM_FEATURES = len(FEATURE_COLS)
 BATCH_SIZE = 32
 EPOCHS = 16
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -22,8 +30,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ROOT_DIR = Path(__file__).resolve().parent
 INPUT_PATH = ROOT_DIR / "temp_input.csv"
 REFERENCE_PATH = ROOT_DIR / "reference_session.csv"
-SVM_SEQ_PATH = ROOT_DIR.parent / "tier_one_svm.pkl"
-SVM_STAT_PATH = ROOT_DIR.parent / "tier_two_svm.pkl"
+SVM_SEQ_PATH = ROOT_DIR.parent / "svm_tier_1_sequence.pkl"
+SVM_STAT_PATH = ROOT_DIR.parent / "svm_tier_2_statistical.pkl"
 LSTM_PATH = ROOT_DIR / "lstm_classifier.pt"
 
 
@@ -31,38 +39,6 @@ def set_seed(seed: int = 42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def clamp01(values):
-    return np.clip(values, 0.0, 1.0)
-
-
-def pad_or_trim(arr: np.ndarray):
-    if len(arr) >= SEQUENCE_LENGTH:
-        return arr[:SEQUENCE_LENGTH]
-
-    padding = np.zeros((SEQUENCE_LENGTH - len(arr), NUM_FEATURES), dtype=np.float32)
-    return np.vstack([arr, padding])
-
-
-def normalize_session(df: pd.DataFrame):
-    frame = df.copy()
-    for column in FEATURE_COLS:
-      if column not in frame:
-        frame[column] = 0.0
-
-    frame = frame[FEATURE_COLS].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-
-    for column in ["X", "Y", "Pressure", "Duration", "Orientation", "Size"]:
-        values = frame[column].to_numpy(dtype=np.float32)
-        min_value = float(np.min(values))
-        max_value = float(np.max(values))
-        if max_value - min_value > 1e-6:
-            frame[column] = (values - min_value) / (max_value - min_value)
-        else:
-            frame[column] = np.full_like(values, 0.5, dtype=np.float32)
-
-    return pad_or_trim(frame.to_numpy(dtype=np.float32))
 
 
 def temporal_resample(sequence: np.ndarray):
@@ -93,7 +69,9 @@ def augment_positive(reference: np.ndarray):
 
 
 def generate_negative(reference: np.ndarray):
-    mode = random.choice(["reverse", "permute", "random", "swap_axes", "spike"])
+    mode = random.choice(
+        ["reverse", "permute", "random", "swap_axes", "spike", "drift", "dropout"]
+    )
 
     if mode == "reverse":
         negative = reference[::-1].copy()
@@ -118,15 +96,22 @@ def generate_negative(reference: np.ndarray):
         spiked[:, 2] = clamp01(np.roll(spiked[:, 2], 5))
         return clamp01(spiked).astype(np.float32)
 
+    if mode == "drift":
+        drifted = reference.copy()
+        gradual_shift = np.linspace(0, np.random.uniform(0.2, 0.45), len(drifted), dtype=np.float32)
+        drifted[:, 0] = clamp01(drifted[:, 0] + gradual_shift)
+        drifted[:, 1] = clamp01(drifted[:, 1] - gradual_shift[::-1])
+        drifted[:, 4] = clamp01(drifted[:, 4] + np.random.normal(0, 0.08, len(drifted)))
+        return drifted.astype(np.float32)
+
+    if mode == "dropout":
+        dropped = reference.copy()
+        mask = np.random.rand(*dropped.shape) < 0.15
+        dropped[mask] = 0.0
+        dropped[:, 3] = clamp01(dropped[:, 3] * np.random.uniform(0.5, 0.9))
+        return dropped.astype(np.float32)
+
     return np.random.rand(SEQUENCE_LENGTH, NUM_FEATURES).astype(np.float32)
-
-
-def extract_stat_features(sequence: np.ndarray):
-    means = np.mean(sequence, axis=0)
-    stds = np.std(sequence, axis=0)
-    mins = np.min(sequence, axis=0)
-    maxs = np.max(sequence, axis=0)
-    return np.concatenate([means, stds, mins, maxs]).astype(np.float32)
 
 
 class SequenceDataset(Dataset):
@@ -205,9 +190,38 @@ def main():
         x_sequences, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    clf_seq = svm.SVC(kernel="rbf", probability=True, random_state=42)
+    seq_base = make_pipeline(
+        StandardScaler(),
+        svm.SVC(
+            kernel="rbf",
+            C=3.0,
+            gamma="scale",
+            class_weight="balanced",
+            random_state=42,
+        ),
+    )
+    stat_base = make_pipeline(
+        StandardScaler(),
+        svm.SVC(
+            kernel="rbf",
+            C=2.0,
+            gamma="scale",
+            class_weight="balanced",
+            random_state=42,
+        ),
+    )
+
+    clf_seq = CalibratedClassifierCV(
+        seq_base,
+        method="sigmoid",
+        cv=5,
+    )
     clf_seq.fit(x_seq_train, y_train)
-    clf_stat = svm.SVC(kernel="rbf", probability=True, random_state=42)
+    clf_stat = CalibratedClassifierCV(
+        stat_base,
+        method="sigmoid",
+        cv=5,
+    )
     clf_stat.fit(x_stat_train, y_train)
 
     seq_accuracy = clf_seq.score(x_seq_test, y_test)

@@ -7,8 +7,8 @@ const { ensureTempInputCsvExists, TEMP_INPUT_PATH } = require("../utils/tempInpu
 const router = express.Router();
 
 const ROOT_DIR = path.join(__dirname, "..");
-const SVM_SEQ_PATH = path.join(ROOT_DIR, "tier_one_svm.pkl");
-const SVM_STAT_PATH = path.join(ROOT_DIR, "tier_two_svm.pkl");
+const SVM_SEQ_PATH = path.join(ROOT_DIR, "svm_tier_1_sequence.pkl");
+const SVM_STAT_PATH = path.join(ROOT_DIR, "svm_tier_2_statistical.pkl");
 const LSTM_PATH = path.join(ROOT_DIR, "ml", "lstm_classifier.pt");
 const DEFAULT_MIN_SAMPLES = 30;
 const TRAIN_TIMEOUT_MS = 10 * 60 * 1000;
@@ -92,7 +92,7 @@ router.post("/bootstrap", (req, res) => {
   lastTrainStatus = "training";
   lastTrainError = null;
 
-  const child = spawn("python", ["ml/retrain_from_live_session.py"], {
+  const child = spawn("python", ["ml/retrain_tiered_from_live_session.py"], {
     cwd: ROOT_DIR,
   });
 
