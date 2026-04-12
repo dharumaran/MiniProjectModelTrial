@@ -12,13 +12,15 @@ def clamp01(values):
 
 def pad_or_trim(arr: np.ndarray):
     if len(arr) >= SEQUENCE_LENGTH:
-        return arr[:SEQUENCE_LENGTH]
+        # Keep the latest behavior window so continuous scoring reacts to
+        # recent user interactions, not stale historical touches.
+        return arr[-SEQUENCE_LENGTH:]
 
     padding = np.zeros((SEQUENCE_LENGTH - len(arr), NUM_FEATURES), dtype=np.float32)
     return np.vstack([arr, padding])
 
 
-def normalize_session(df: pd.DataFrame):
+def normalize_session(df: pd.DataFrame, renormalize: bool = False):
     frame = df.copy()
     for column in FEATURE_COLS:
         if column not in frame:
@@ -26,14 +28,19 @@ def normalize_session(df: pd.DataFrame):
 
     frame = frame[FEATURE_COLS].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
-    for column in FEATURE_COLS:
-        values = frame[column].to_numpy(dtype=np.float32)
-        min_value = float(np.min(values))
-        max_value = float(np.max(values))
-        if max_value - min_value > 1e-6:
-            frame[column] = (values - min_value) / (max_value - min_value)
-        else:
-            frame[column] = np.full_like(values, 0.5, dtype=np.float32)
+    if renormalize:
+        for column in FEATURE_COLS:
+            values = frame[column].to_numpy(dtype=np.float32)
+            min_value = float(np.min(values))
+            max_value = float(np.max(values))
+            if max_value - min_value > 1e-6:
+                frame[column] = (values - min_value) / (max_value - min_value)
+            else:
+                frame[column] = np.full_like(values, 0.5, dtype=np.float32)
+    else:
+        # Input rows are already normalized to [0, 1] by the backend writer.
+        # Re-normalizing each window here can erase user-specific scale.
+        frame = frame.clip(lower=0.0, upper=1.0)
 
     return pad_or_trim(frame.to_numpy(dtype=np.float32))
 

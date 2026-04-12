@@ -1,9 +1,9 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
-const { spawn } = require("child_process");
 const { writeTempInputCsv } = require("../utils/tempInputCsv");
 const { resolveModelScope } = require("../utils/modelScope");
+const { spawnPython, appendDependencyHint } = require("../utils/pythonRuntime");
 
 const router = express.Router();
 
@@ -32,8 +32,7 @@ router.post("/", async (req, res) => {
   const svmStatPath = fs.existsSync(scope.svmStatPath) ? scope.svmStatPath : defaultSvmStatPath;
   const lstmPath = fs.existsSync(scope.lstmPath) ? scope.lstmPath : defaultLstmPath;
 
-  const py = spawn(
-    "python",
+  const py = spawnPython(
     [
       "ml/predict_tiered.py",
       "--temp-input",
@@ -52,6 +51,7 @@ router.post("/", async (req, res) => {
 
   let output = "";
   let errorOutput = "";
+  let hasResponded = false;
 
   py.stdout.on("data", (data) => {
     output += data.toString();
@@ -63,14 +63,31 @@ router.post("/", async (req, res) => {
     console.error("predict error:", message);
   });
 
+  py.on("error", (error) => {
+    if (hasResponded) {
+      return;
+    }
+    hasResponded = true;
+    return res.status(500).json({
+      message: "Model prediction failed.",
+      detail: `Failed to start Python process: ${error.message}`,
+    });
+  });
+
   py.on("close", (code) => {
+    if (hasResponded) {
+      return;
+    }
+    hasResponded = true;
     if (code !== 0) {
       console.error(
         `[predict] python exited with code ${code}. ${errorOutput.trim() || "No stderr output."}`
       );
       return res.status(500).json({
         message: "Model prediction failed.",
-        detail: errorOutput.trim() || `Predict script exited with code ${code}`,
+        detail: appendDependencyHint(
+          errorOutput.trim() || `Predict script exited with code ${code}`
+        ),
       });
     }
 

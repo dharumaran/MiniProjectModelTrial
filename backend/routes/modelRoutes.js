@@ -1,9 +1,9 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
 const { ensureTempInputCsvExists } = require("../utils/tempInputCsv");
 const { resolveModelScope } = require("../utils/modelScope");
+const { spawnPython, appendDependencyHint } = require("../utils/pythonRuntime");
 
 const router = express.Router();
 
@@ -129,8 +129,7 @@ router.post("/bootstrap", (req, res) => {
   lastTrainStatus = "training";
   lastTrainError = null;
 
-  const child = spawn(
-    "python",
+  const child = spawnPython(
     [
       "ml/retrain_tiered_from_live_session.py",
       "--input",
@@ -157,6 +156,7 @@ router.post("/bootstrap", (req, res) => {
 
   let stdout = "";
   let stderr = "";
+  let hasResponded = false;
 
   const timeoutId = setTimeout(() => {
     child.kill("SIGTERM");
@@ -170,13 +170,34 @@ router.post("/bootstrap", (req, res) => {
     stderr += data.toString();
   });
 
+  child.on("error", (error) => {
+    if (hasResponded) {
+      return;
+    }
+    hasResponded = true;
+    clearTimeout(timeoutId);
+    trainingInProgress = false;
+    lastTrainStatus = "failed";
+    lastTrainError = `Failed to start Python process: ${error.message}`;
+    return res.status(500).json({
+      message: "Model retraining failed.",
+      error: lastTrainError,
+    });
+  });
+
   child.on("close", (code) => {
+    if (hasResponded) {
+      return;
+    }
+    hasResponded = true;
     clearTimeout(timeoutId);
     trainingInProgress = false;
 
     if (code !== 0) {
       lastTrainStatus = "failed";
-      lastTrainError = (stderr || stdout || `Exited with code ${code}`).trim();
+      lastTrainError = appendDependencyHint(
+        (stderr || stdout || `Exited with code ${code}`).trim()
+      );
       console.error(`[model-bootstrap] failed: ${lastTrainError}`);
       return res.status(500).json({
         message: "Model retraining failed.",
