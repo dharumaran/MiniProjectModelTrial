@@ -67,6 +67,8 @@ export default function TransferMpin() {
     setIsSubmitting(true);
 
     try {
+      const session = await getSession();
+
       // Hard guard: if live continuous scoring already says high, logout immediately.
       const lastRisk = getModelConfidenceSnapshot().risk;
       if (isHighRiskLabel(lastRisk)) {
@@ -85,7 +87,10 @@ export default function TransferMpin() {
         }));
         const riskResponse = await apiFetch<ModelConfidence>("/predict", {
           method: "POST",
-          body: JSON.stringify({ session: sessionData }),
+          body: JSON.stringify({
+            session: sessionData,
+            accountNo: session?.user?.accountNo || undefined,
+          }),
         });
         publishModelConfidence(riskResponse);
 
@@ -126,7 +131,6 @@ export default function TransferMpin() {
         // low risk proceeds normally
       }
 
-      const session = await getSession();
       const pendingTransfer = await getPendingTransfer();
 
       if (!session?.user?.accountNo) {

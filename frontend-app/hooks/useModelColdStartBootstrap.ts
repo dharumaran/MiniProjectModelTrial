@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { apiFetch, getCurrentApiBaseUrl } from "../utils/api";
+import { getSession } from "../utils/session";
 import {
   getContinuousModelTotalSamples,
   subscribeToContinuousModelBuffer,
@@ -76,10 +77,16 @@ export default function useModelColdStartBootstrap() {
         );
       }
 
-      void apiFetch<ModelBootstrapResponse>("/model/bootstrap", {
-        method: "POST",
-        body: JSON.stringify({ minSamples: MIN_BOOTSTRAP_SAMPLES }),
-      })
+      void getSession()
+        .then((session) =>
+          apiFetch<ModelBootstrapResponse>("/model/bootstrap", {
+            method: "POST",
+            body: JSON.stringify({
+              minSamples: MIN_BOOTSTRAP_SAMPLES,
+              accountNo: session?.user?.accountNo || undefined,
+            }),
+          })
+        )
         .then((response) => {
           setModelBootstrapState({
             phase: "ready",
