@@ -118,9 +118,11 @@ router.post("/", async (req, res) => {
     let risk = "low";
     if ((lstm_score < 0.25 && fused_score < 0.35) || fused_score < 0.3) {
       risk = "high";
-    } else if (fused_score < 0.45) {
+    } else if (fused_score < 0.55 || (lstm_score < 0.6 && fused_score < 0.62)) {
+      // Treat uncertain windows as medium when fused confidence is modest,
+      // especially if LSTM drops, which is common during user-switch events.
       risk = "medium";
-    } else if (fused_score < 0.55) {
+    } else if (fused_score < 0.65) {
       risk = "low-medium";
     }
 

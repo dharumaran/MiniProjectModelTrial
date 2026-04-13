@@ -97,7 +97,9 @@ export default function TransferMpin() {
           (hasFused && riskResponse.lstm_score < 0.25 && fused < 0.35);
         const isHighRisk = isHighRiskLabel(normalizedRisk) || highByScore;
         const isMediumRisk =
-          normalizedRisk === "medium-high" || normalizedRisk === "low-medium";
+          normalizedRisk === "medium" ||
+          normalizedRisk === "medium-high" ||
+          normalizedRisk === "low-medium";
 
         if (isHighRisk) {
           await performSilentLogout();
