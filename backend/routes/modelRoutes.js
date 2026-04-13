@@ -3,14 +3,12 @@ const fs = require("fs");
 const path = require("path");
 const { ensureTempInputCsvExists } = require("../utils/tempInputCsv");
 const { resolveModelScope } = require("../utils/modelScope");
+const { resolveModelArtifacts } = require("../utils/modelArtifacts");
 const { spawnPython, appendDependencyHint } = require("../utils/pythonRuntime");
 
 const router = express.Router();
 
 const ROOT_DIR = path.join(__dirname, "..");
-const DEFAULT_SVM_SEQ_PATH = path.join(ROOT_DIR, "svm_tier_1_sequence.pkl");
-const DEFAULT_SVM_STAT_PATH = path.join(ROOT_DIR, "svm_tier_2_statistical.pkl");
-const DEFAULT_LSTM_PATH = path.join(ROOT_DIR, "ml", "lstm_classifier.pt");
 const DEFAULT_MIN_SAMPLES = 30;
 const TRAIN_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -56,24 +54,18 @@ function readInputRowCount(accountNo) {
   };
 }
 
-function toScopedOrDefault(artifactPath, fallbackPath) {
-  return fs.existsSync(artifactPath) ? artifactPath : fallbackPath;
-}
-
 function getModelArtifacts(accountNo) {
-  const scope = resolveModelScope(accountNo);
-  const svmSeqPath = toScopedOrDefault(scope.svmSeqPath, DEFAULT_SVM_SEQ_PATH);
-  const svmStatPath = toScopedOrDefault(scope.svmStatPath, DEFAULT_SVM_STAT_PATH);
-  const lstmPath = toScopedOrDefault(scope.lstmPath, DEFAULT_LSTM_PATH);
+  const artifacts = resolveModelArtifacts(accountNo);
 
   return {
-    scopeId: scope.scopeId,
-    svmSeqPath,
-    svmSeqModifiedAt: toIsoOrNull(svmSeqPath),
-    svmStatPath,
-    svmStatModifiedAt: toIsoOrNull(svmStatPath),
-    lstmPath,
-    lstmModifiedAt: toIsoOrNull(lstmPath),
+    scopeId: artifacts.scopeId,
+    svmSeqPath: artifacts.svmSeqPath || null,
+    svmSeqModifiedAt: toIsoOrNull(artifacts.svmSeqPath),
+    svmStatPath: artifacts.svmStatPath || null,
+    svmStatModifiedAt: toIsoOrNull(artifacts.svmStatPath),
+    lstmPath: artifacts.lstmPath || null,
+    lstmModifiedAt: toIsoOrNull(artifacts.lstmPath),
+    missingArtifacts: artifacts.missing,
   };
 }
 
@@ -148,6 +140,11 @@ router.post("/bootstrap", (req, res) => {
       path.join(ROOT_DIR, "ml", "user_profiles"),
       "--scope-id",
       scope.scopeId,
+      "--enforce-quality-gate",
+      "--min-hard-negatives",
+      "5",
+      "--min-lstm-balanced-accuracy",
+      "0.60",
     ],
     {
       cwd: ROOT_DIR,

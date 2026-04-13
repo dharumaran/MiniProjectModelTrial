@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { apiFetch, getCurrentApiBaseUrl } from "../utils/api";
+import { getSession } from "../utils/session";
 import {
   getContinuousModelEvents,
   getContinuousModelTotalSamples,
@@ -68,10 +69,16 @@ export default function useContinuousTempInputSync() {
         );
       }
 
-      void apiFetch<RecordSessionResponse>("/record-session/behavior", {
-        method: "POST",
-        body: JSON.stringify({ session: currentEvents }),
-      })
+      void getSession()
+        .then((session) =>
+          apiFetch<RecordSessionResponse>("/record-session/behavior", {
+            method: "POST",
+            body: JSON.stringify({
+              session: currentEvents,
+              accountNo: session?.user?.accountNo || undefined,
+            }),
+          })
+        )
         .then((response) => {
           lastSyncedTotalRef.current = totalSamples;
           lastSyncedAtRef.current = Date.now();

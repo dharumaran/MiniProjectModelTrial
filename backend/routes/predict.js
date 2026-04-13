@@ -1,15 +1,13 @@
 const express = require("express");
 const path = require("path");
-const fs = require("fs");
 const { writeTempInputCsv } = require("../utils/tempInputCsv");
-const { resolveModelScope } = require("../utils/modelScope");
+const { resolveModelArtifacts } = require("../utils/modelArtifacts");
 const { spawnPython, appendDependencyHint } = require("../utils/pythonRuntime");
 
 const router = express.Router();
 
 router.post("/", async (req, res) => {
   const accountNo = req.body?.accountNo || req.headers["x-account-no"];
-  const scope = resolveModelScope(accountNo);
   const { normalizedSession, rowCount, inputPath, scopeId } = writeTempInputCsv(
     req.body.session,
     { accountNo }
@@ -24,13 +22,14 @@ router.post("/", async (req, res) => {
     `[predict] scope=${scopeId} received ${rowCount} rows and updated temp_input.csv at ${inputPath}`
   );
 
-  const defaultSvmSeqPath = path.join(__dirname, "..", "svm_tier_1_sequence.pkl");
-  const defaultSvmStatPath = path.join(__dirname, "..", "svm_tier_2_statistical.pkl");
-  const defaultLstmPath = path.join(__dirname, "..", "ml", "lstm_classifier.pt");
-
-  const svmSeqPath = fs.existsSync(scope.svmSeqPath) ? scope.svmSeqPath : defaultSvmSeqPath;
-  const svmStatPath = fs.existsSync(scope.svmStatPath) ? scope.svmStatPath : defaultSvmStatPath;
-  const lstmPath = fs.existsSync(scope.lstmPath) ? scope.lstmPath : defaultLstmPath;
+  const artifacts = resolveModelArtifacts(accountNo);
+  if (artifacts.missing.length) {
+    return res.status(503).json({
+      message: "Model artifacts are missing. Run /api/model/bootstrap to train models.",
+      missingArtifacts: artifacts.missing,
+      scope: scopeId,
+    });
+  }
 
   const py = spawnPython(
     [
@@ -38,11 +37,11 @@ router.post("/", async (req, res) => {
       "--temp-input",
       inputPath,
       "--svm-seq",
-      svmSeqPath,
+      artifacts.svmSeqPath,
       "--svm-stat",
-      svmStatPath,
+      artifacts.svmStatPath,
       "--lstm",
-      lstmPath,
+      artifacts.lstmPath,
     ],
     {
       cwd: path.join(__dirname, ".."),
@@ -118,9 +117,14 @@ router.post("/", async (req, res) => {
     let risk = "low";
     if ((lstm_score < 0.25 && fused_score < 0.35) || fused_score < 0.3) {
       risk = "high";
-    } else if (fused_score < 0.45) {
+    } else if (fused_score < 0.4 || (lstm_score < 0.45 && fused_score < 0.5)) {
+      // Escalate to medium-high when confidence drops significantly but not to hard high.
+      risk = "medium-high";
+    } else if (fused_score < 0.55 || (lstm_score < 0.6 && fused_score < 0.62)) {
+      // Treat uncertain windows as medium when fused confidence is modest,
+      // especially if LSTM drops, which is common during user-switch events.
       risk = "medium";
-    } else if (fused_score < 0.55) {
+    } else if (fused_score < 0.65) {
       risk = "low-medium";
     }
 

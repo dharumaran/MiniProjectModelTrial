@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { apiFetch, getCurrentApiBaseUrl } from "../utils/api";
+import { getSession } from "../utils/session";
 import {
   getContinuousModelTotalSamples,
   subscribeToContinuousModelBuffer,
@@ -14,6 +15,12 @@ interface ModelBootstrapResponse {
   message: string;
   trainedAt: string;
   inputRowCount: number;
+}
+
+interface ModelStatusResponse {
+  artifacts?: {
+    missingArtifacts?: string[];
+  };
 }
 
 const COLD_START_MS = 20000;
@@ -76,10 +83,16 @@ export default function useModelColdStartBootstrap() {
         );
       }
 
-      void apiFetch<ModelBootstrapResponse>("/model/bootstrap", {
-        method: "POST",
-        body: JSON.stringify({ minSamples: MIN_BOOTSTRAP_SAMPLES }),
-      })
+      void getSession()
+        .then((session) =>
+          apiFetch<ModelBootstrapResponse>("/model/bootstrap", {
+            method: "POST",
+            body: JSON.stringify({
+              minSamples: MIN_BOOTSTRAP_SAMPLES,
+              accountNo: session?.user?.accountNo || undefined,
+            }),
+          })
+        )
         .then((response) => {
           setModelBootstrapState({
             phase: "ready",
@@ -96,15 +109,45 @@ export default function useModelColdStartBootstrap() {
           }
         })
         .catch((error) => {
-          lastFailureAtRef.current = Date.now();
-          setModelBootstrapState({
-            phase: "failed",
-            message: `Bootstrap failed: ${error instanceof Error ? error.message : "unknown error"}`,
-          });
-          console.warn(
-            "[model-bootstrap] retrain failed",
-            error instanceof Error ? error.message : error
-          );
+          const errorMessage = error instanceof Error ? error.message : "unknown error";
+          console.warn("[model-bootstrap] retrain failed", errorMessage);
+
+          void getSession()
+            .then((session) =>
+              apiFetch<ModelStatusResponse>(
+                `/model/status?accountNo=${encodeURIComponent(
+                  session?.user?.accountNo || ""
+                )}`
+              )
+            )
+            .then((status) => {
+              const missingArtifacts = status.artifacts?.missingArtifacts || [];
+              if (!missingArtifacts.length) {
+                setModelBootstrapState({
+                  phase: "ready",
+                  message: `Using existing model artifacts (bootstrap skipped: ${errorMessage})`,
+                });
+                if (__DEV__) {
+                  console.log(
+                    "[model-bootstrap] fallback to existing artifacts after retrain failure"
+                  );
+                }
+                return;
+              }
+
+              lastFailureAtRef.current = Date.now();
+              setModelBootstrapState({
+                phase: "failed",
+                message: `Bootstrap failed: ${errorMessage}`,
+              });
+            })
+            .catch(() => {
+              lastFailureAtRef.current = Date.now();
+              setModelBootstrapState({
+                phase: "failed",
+                message: `Bootstrap failed: ${errorMessage}`,
+              });
+            });
         })
         .finally(() => {
           requestInFlightRef.current = false;
