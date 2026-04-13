@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from sklearn import svm
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -215,6 +216,9 @@ def main():
     parser.add_argument("--lstm", default=str(DEFAULT_LSTM_PATH))
     parser.add_argument("--profiles-root", default=str(DEFAULT_PROFILES_ROOT))
     parser.add_argument("--scope-id", default="shared")
+    parser.add_argument("--min-hard-negatives", type=int, default=5)
+    parser.add_argument("--min-lstm-balanced-accuracy", type=float, default=0.60)
+    parser.add_argument("--enforce-quality-gate", action="store_true")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -316,9 +320,13 @@ def main():
 
     seq_accuracy = clf_seq.score(x_seq_test, y_test)
     stat_accuracy = clf_stat.score(x_stat_test, y_test)
+    seq_balanced_accuracy = balanced_accuracy_score(y_test, clf_seq.predict(x_seq_test))
+    stat_balanced_accuracy = balanced_accuracy_score(y_test, clf_stat.predict(x_stat_test))
 
     print(f"SVM Seq Accuracy: {seq_accuracy:.4f}")
     print(f"SVM Stat Accuracy: {stat_accuracy:.4f}")
+    print(f"SVM Seq Balanced Accuracy: {seq_balanced_accuracy:.4f}")
+    print(f"SVM Stat Balanced Accuracy: {stat_balanced_accuracy:.4f}")
 
     train_lstm_model(x_lstm_train, y_lstm_train, lstm_path)
 
@@ -330,13 +338,33 @@ def main():
         x_eval = torch.tensor(x_lstm_test, dtype=torch.float32).to(DEVICE)
         y_pred = torch.argmax(lstm_eval_model(x_eval), dim=1).cpu().numpy()
         lstm_accuracy = float(np.mean(y_pred == y_lstm_test))
+        lstm_balanced_accuracy = float(balanced_accuracy_score(y_lstm_test, y_pred))
 
     print(f"LSTM Accuracy: {lstm_accuracy:.4f}")
+    print(f"LSTM Balanced Accuracy: {lstm_balanced_accuracy:.4f}")
 
     joblib.dump(clf_seq, svm_seq_path)
     joblib.dump(clf_stat, svm_stat_path)
 
     print(f"Hard negatives used: {len(sampled_hard_negatives)}")
+
+    if args.enforce_quality_gate:
+        failures = []
+        if len(sampled_hard_negatives) < max(0, int(args.min_hard_negatives)):
+            failures.append(
+                f"hard negatives {len(sampled_hard_negatives)} < required {int(args.min_hard_negatives)}"
+            )
+        if lstm_balanced_accuracy < float(args.min_lstm_balanced_accuracy):
+            failures.append(
+                f"LSTM balanced accuracy {lstm_balanced_accuracy:.4f} < required {float(args.min_lstm_balanced_accuracy):.4f}"
+            )
+        if failures:
+            raise ValueError(
+                "Model quality gate failed: "
+                + "; ".join(failures)
+                + ". Collect more genuine owner sessions and at least 5 impostor sessions from other users."
+            )
+
     print(f"Saved reference to {reference_path}")
     print(f"Saved SVM seq model to {svm_seq_path}")
     print(f"Saved SVM stat model to {svm_stat_path}")

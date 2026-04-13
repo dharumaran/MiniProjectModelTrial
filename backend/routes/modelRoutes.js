@@ -140,6 +140,11 @@ router.post("/bootstrap", (req, res) => {
       path.join(ROOT_DIR, "ml", "user_profiles"),
       "--scope-id",
       scope.scopeId,
+      "--enforce-quality-gate",
+      "--min-hard-negatives",
+      "5",
+      "--min-lstm-balanced-accuracy",
+      "0.60",
     ],
     {
       cwd: ROOT_DIR,

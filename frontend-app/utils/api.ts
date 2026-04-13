@@ -157,7 +157,7 @@ export async function apiFetch<T>(
 
       lastSuccessfulApiBaseUrl = baseUrl;
 
-      let data: (T & { message?: string }) | null = null;
+      let data: (T & { message?: string; detail?: string; error?: string }) | null = null;
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
         data = (await response.json()) as T & { message?: string };
@@ -167,8 +167,11 @@ export async function apiFetch<T>(
       }
 
       if (!response.ok) {
+        const detailedMessage = [data?.message, data?.detail, data?.error]
+          .filter((part): part is string => Boolean(part && part.trim()))
+          .join(" | ");
         throw new Error(
-          data?.message || `Request failed. API base URL: ${baseUrl}`
+          detailedMessage || `Request failed. API base URL: ${baseUrl}`
         );
       }
 

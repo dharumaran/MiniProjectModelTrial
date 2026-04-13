@@ -44,8 +44,18 @@ export default function TransferMpin() {
   } | null>(null);
   const { panResponder, events } = useBehaviorTracker();
 
-  const isHighRiskLabel = (value: string | null | undefined) =>
-    String(value || "").toLowerCase().trim() === "high";
+  const normalizeRisk = (value: string | null | undefined) =>
+    String(value || "").toLowerCase().trim();
+
+  const isImmediateLogoutRisk = (value: string | null | undefined) => {
+    const normalized = normalizeRisk(value);
+    return normalized === "high" || normalized === "medium-high";
+  };
+
+  const isReauthRisk = (value: string | null | undefined) => {
+    const normalized = normalizeRisk(value);
+    return normalized === "medium" || normalized === "low-medium";
+  };
 
   const performSilentLogout = async () => {
     await Promise.allSettled([
@@ -71,7 +81,7 @@ export default function TransferMpin() {
 
       // Hard guard: if live continuous scoring already says high, logout immediately.
       const lastRisk = getModelConfidenceSnapshot().risk;
-      if (isHighRiskLabel(lastRisk)) {
+      if (isImmediateLogoutRisk(lastRisk)) {
         await performSilentLogout();
         return;
       }
@@ -94,17 +104,18 @@ export default function TransferMpin() {
         });
         publishModelConfidence(riskResponse);
 
-        const normalizedRisk = String(riskResponse.risk || "").toLowerCase().trim();
+        const normalizedRisk = normalizeRisk(riskResponse.risk);
         const fused = Number(riskResponse.fused_score);
         const hasFused = Number.isFinite(fused);
         const highByScore =
           (hasFused && fused < 0.3) ||
           (hasFused && riskResponse.lstm_score < 0.25 && fused < 0.35);
-        const isHighRisk = isHighRiskLabel(normalizedRisk) || highByScore;
-        const isMediumRisk =
-          normalizedRisk === "medium" ||
-          normalizedRisk === "medium-high" ||
-          normalizedRisk === "low-medium";
+        const mediumHighByScore =
+          hasFused &&
+          !highByScore &&
+          (fused < 0.4 || (riskResponse.lstm_score < 0.45 && fused < 0.5));
+        const isHighRisk = isImmediateLogoutRisk(normalizedRisk) || highByScore || mediumHighByScore;
+        const isMediumRisk = isReauthRisk(normalizedRisk);
 
         if (isHighRisk) {
           await performSilentLogout();

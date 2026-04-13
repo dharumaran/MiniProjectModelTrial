@@ -17,6 +17,12 @@ interface ModelBootstrapResponse {
   inputRowCount: number;
 }
 
+interface ModelStatusResponse {
+  artifacts?: {
+    missingArtifacts?: string[];
+  };
+}
+
 const COLD_START_MS = 20000;
 const MIN_BOOTSTRAP_SAMPLES = 30;
 const CHECK_INTERVAL_MS = 1000;
@@ -103,15 +109,45 @@ export default function useModelColdStartBootstrap() {
           }
         })
         .catch((error) => {
-          lastFailureAtRef.current = Date.now();
-          setModelBootstrapState({
-            phase: "failed",
-            message: `Bootstrap failed: ${error instanceof Error ? error.message : "unknown error"}`,
-          });
-          console.warn(
-            "[model-bootstrap] retrain failed",
-            error instanceof Error ? error.message : error
-          );
+          const errorMessage = error instanceof Error ? error.message : "unknown error";
+          console.warn("[model-bootstrap] retrain failed", errorMessage);
+
+          void getSession()
+            .then((session) =>
+              apiFetch<ModelStatusResponse>(
+                `/model/status?accountNo=${encodeURIComponent(
+                  session?.user?.accountNo || ""
+                )}`
+              )
+            )
+            .then((status) => {
+              const missingArtifacts = status.artifacts?.missingArtifacts || [];
+              if (!missingArtifacts.length) {
+                setModelBootstrapState({
+                  phase: "ready",
+                  message: `Using existing model artifacts (bootstrap skipped: ${errorMessage})`,
+                });
+                if (__DEV__) {
+                  console.log(
+                    "[model-bootstrap] fallback to existing artifacts after retrain failure"
+                  );
+                }
+                return;
+              }
+
+              lastFailureAtRef.current = Date.now();
+              setModelBootstrapState({
+                phase: "failed",
+                message: `Bootstrap failed: ${errorMessage}`,
+              });
+            })
+            .catch(() => {
+              lastFailureAtRef.current = Date.now();
+              setModelBootstrapState({
+                phase: "failed",
+                message: `Bootstrap failed: ${errorMessage}`,
+              });
+            });
         })
         .finally(() => {
           requestInFlightRef.current = false;
