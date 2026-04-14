@@ -250,10 +250,40 @@ function writeTempInputCsv(session, options = {}) {
   };
 }
 
+function writeHistoryCsvFromSession(session, options = {}) {
+  const scope = resolveModelScope(options.accountNo);
+  const normalizedSession = normalizeSession(session);
+  ensureCsvWithHeader(scope.historyPath);
+
+  if (!normalizedSession.length) {
+    return {
+      normalizedSession,
+      rowCount: 0,
+      historyPath: scope.historyPath,
+      scopeId: scope.scopeId,
+    };
+  }
+
+  const rows = normalizedSession.map(
+    (row) =>
+      `${row.X},${row.Y},${row.Pressure},${row.Duration},${row.Orientation},${row.Size}`
+  );
+
+  fs.writeFileSync(scope.historyPath, HEADER + rows.join("\n") + "\n", "utf8");
+
+  return {
+    normalizedSession,
+    rowCount: normalizedSession.length,
+    historyPath: scope.historyPath,
+    scopeId: scope.scopeId,
+  };
+}
+
 module.exports = {
   TEMP_INPUT_PATH,
   ensureTempInputCsvExists,
   resolveTempInputPath,
   normalizeSession,
   writeTempInputCsv,
+  writeHistoryCsvFromSession,
 };

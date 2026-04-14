@@ -43,6 +43,96 @@ function parseCsvLine(line: string) {
   return result;
 }
 
+function parseTouchEventsFromBehaviorCsv(raw: string) {
+  const lines = raw
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length <= 1) {
+    return [];
+  }
+
+  const header = parseCsvLine(lines[0]);
+  const indexByName = new Map<string, number>();
+  header.forEach((name, index) => {
+    indexByName.set(name, index);
+  });
+
+  const sensorTypeIndex = indexByName.get("sensor_type");
+  const pageXIndex = indexByName.get("page_x");
+  const pageYIndex = indexByName.get("page_y");
+  const actionIndex = indexByName.get("touch_action");
+  const timestampIndex = indexByName.get("timestamp");
+
+  if (
+    sensorTypeIndex === undefined ||
+    pageXIndex === undefined ||
+    pageYIndex === undefined ||
+    actionIndex === undefined ||
+    timestampIndex === undefined
+  ) {
+    return [];
+  }
+
+  let localGestureStart: number | null = null;
+  const restored: ContinuousModelEvent[] = [];
+
+  for (let index = 1; index < lines.length; index += 1) {
+    const cols = parseCsvLine(lines[index]);
+    if (cols[sensorTypeIndex] !== "touch") {
+      continue;
+    }
+
+    const action = cols[actionIndex] as "start" | "move" | "end";
+    const pageX = Number(cols[pageXIndex]);
+    const pageY = Number(cols[pageYIndex]);
+    const timestamp = Number(cols[timestampIndex]);
+
+    if (!Number.isFinite(pageX) || !Number.isFinite(pageY) || !Number.isFinite(timestamp)) {
+      continue;
+    }
+
+    if (action === "start" || localGestureStart === null) {
+      localGestureStart = timestamp;
+    }
+
+    const duration = Math.max(1, timestamp - localGestureStart);
+    restored.push({
+      accelX: pageX,
+      accelY: pageY,
+      touchPressure: 0.5,
+      duration,
+    });
+
+    if (action === "end") {
+      localGestureStart = null;
+    }
+  }
+
+  return restored;
+}
+
+export async function readTouchEventsFromBehaviorCsv(options?: { maxSamples?: number }) {
+  try {
+    const { getBehaviorCsvPath } = await import("./behaviorCsvLogger");
+    const FileSystem = await import("expo-file-system/legacy");
+    const csvPath = await getBehaviorCsvPath();
+    const raw = await FileSystem.readAsStringAsync(csvPath, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    const restored = parseTouchEventsFromBehaviorCsv(raw);
+    if (!restored.length) {
+      return [];
+    }
+    const maxSamples = Math.max(1, Number(options?.maxSamples || restored.length));
+    return restored.slice(-maxSamples);
+  } catch {
+    return [];
+  }
+}
+
 export async function initializeContinuousModelBuffer() {
   if (initializedFromCsv) {
     return;
@@ -51,85 +141,7 @@ export async function initializeContinuousModelBuffer() {
   initializedFromCsv = true;
 
   try {
-    const { getBehaviorCsvPath } = await import("./behaviorCsvLogger");
-    const FileSystem = await import("expo-file-system/legacy");
-    const csvPath = await getBehaviorCsvPath();
-    const fileInfo = await FileSystem.getInfoAsync(csvPath);
-
-    if (!fileInfo.exists) {
-      return;
-    }
-
-    const raw = await FileSystem.readAsStringAsync(csvPath, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-    const lines = raw
-      .replace(/\r\n/g, "\n")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-
-    if (lines.length <= 1) {
-      return;
-    }
-
-    const header = parseCsvLine(lines[0]);
-    const indexByName = new Map<string, number>();
-    header.forEach((name, index) => {
-      indexByName.set(name, index);
-    });
-
-    const sensorTypeIndex = indexByName.get("sensor_type");
-    const pageXIndex = indexByName.get("page_x");
-    const pageYIndex = indexByName.get("page_y");
-    const actionIndex = indexByName.get("touch_action");
-    const timestampIndex = indexByName.get("timestamp");
-
-    if (
-      sensorTypeIndex === undefined ||
-      pageXIndex === undefined ||
-      pageYIndex === undefined ||
-      actionIndex === undefined ||
-      timestampIndex === undefined
-    ) {
-      return;
-    }
-
-    let localGestureStart: number | null = null;
-    const restored: ContinuousModelEvent[] = [];
-
-    for (let index = 1; index < lines.length; index += 1) {
-      const cols = parseCsvLine(lines[index]);
-      if (cols[sensorTypeIndex] !== "touch") {
-        continue;
-      }
-
-      const action = cols[actionIndex] as "start" | "move" | "end";
-      const pageX = Number(cols[pageXIndex]);
-      const pageY = Number(cols[pageYIndex]);
-      const timestamp = Number(cols[timestampIndex]);
-
-      if (!Number.isFinite(pageX) || !Number.isFinite(pageY) || !Number.isFinite(timestamp)) {
-        continue;
-      }
-
-      if (action === "start" || localGestureStart === null) {
-        localGestureStart = timestamp;
-      }
-
-      const duration = Math.max(1, timestamp - localGestureStart);
-      restored.push({
-        accelX: pageX,
-        accelY: pageY,
-        touchPressure: 0.5,
-        duration,
-      });
-
-      if (action === "end") {
-        localGestureStart = null;
-      }
-    }
-
+    const restored = await readTouchEventsFromBehaviorCsv();
     if (!restored.length) {
       return;
     }

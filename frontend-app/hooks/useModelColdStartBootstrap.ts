@@ -3,6 +3,7 @@ import { apiFetch, getCurrentApiBaseUrl } from "../utils/api";
 import { getSession } from "../utils/session";
 import {
   getContinuousModelTotalSamples,
+  readTouchEventsFromBehaviorCsv,
   subscribeToContinuousModelBuffer,
 } from "../utils/continuousModelBuffer";
 import {
@@ -84,14 +85,19 @@ export default function useModelColdStartBootstrap() {
       }
 
       void getSession()
-        .then((session) =>
-          apiFetch<ModelBootstrapResponse>("/model/bootstrap", {
+        .then(async (session) => {
+          const trainingSession = await readTouchEventsFromBehaviorCsv({
+            maxSamples: 2500,
+          });
+          return apiFetch<ModelBootstrapResponse>("/model/bootstrap", {
             method: "POST",
             body: JSON.stringify({
               minSamples: MIN_BOOTSTRAP_SAMPLES,
               accountNo: session?.user?.accountNo || undefined,
+              trainingSession,
             }),
-          })
+          });
+        }
         )
         .then((response) => {
           setModelBootstrapState({

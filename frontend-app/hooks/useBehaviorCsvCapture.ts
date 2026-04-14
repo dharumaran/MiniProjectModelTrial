@@ -5,7 +5,9 @@ import { getSession } from "../utils/session";
 import {
   appendBehaviorCsvRow,
   flushBehaviorCsvRows,
+  forceSyncPublicMirror,
   getBehaviorCsvPath,
+  getPublicBehaviorCsvPath,
   initBehaviorCsvFile,
 } from "../utils/behaviorCsvLogger";
 
@@ -32,6 +34,9 @@ let captureReady = false;
 let activeSessionId = "";
 let activeUserId = "unknown_user";
 
+/** Track how many sensor rows are buffered per session for diagnostics. */
+let sensorRowsBuffered = 0;
+
 function createSessionId() {
   return `sess-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
 }
@@ -52,6 +57,8 @@ function writeSensorRow(
   if (!captureReady || !activeSessionId) {
     return;
   }
+
+  sensorRowsBuffered++;
 
   void appendBehaviorCsvRow({
     timestamp: Date.now(),
@@ -79,6 +86,12 @@ export function recordTouchSnapshot(payload: TouchPayload) {
     pageY: payload.pageY,
     touchAction: payload.action,
   });
+
+  if (payload.action === "end") {
+    void flushBehaviorCsvRows().catch(() => {
+      // Keep capture resilient even when immediate touch flush fails.
+    });
+  }
 }
 
 export default function useBehaviorCsvCapture() {
@@ -107,9 +120,17 @@ export default function useBehaviorCsvCapture() {
         clearInterval(flushInterval);
         flushInterval = null;
       }
-      void flushBehaviorCsvRows().catch(() => {
-        // Ignore flush failures during app shutdown transitions.
-      });
+
+      console.log(
+        `[BehaviorCSV] Stopping capture. Rows buffered this session: ${sensorRowsBuffered}`
+      );
+
+      // Flush remaining rows, then force-sync the public mirror
+      void flushBehaviorCsvRows()
+        .then(() => forceSyncPublicMirror())
+        .catch(() => {
+          // Ignore flush failures during app shutdown transitions.
+        });
     };
 
     const startCapture = (newSession: boolean) => {
@@ -119,11 +140,16 @@ export default function useBehaviorCsvCapture() {
 
       if (newSession) {
         sessionIdRef.current = createSessionId();
+        sensorRowsBuffered = 0;
       }
 
       activeSessionId = sessionIdRef.current;
       activeUserId = userIdRef.current;
       captureReady = true;
+
+      console.log(
+        `[BehaviorCSV] Starting capture. User: ${activeUserId}, Session: ${activeSessionId}`
+      );
 
       Accelerometer.setUpdateInterval(SENSOR_INTERVAL_MS);
       Gyroscope.setUpdateInterval(SENSOR_INTERVAL_MS);
@@ -159,7 +185,9 @@ export default function useBehaviorCsvCapture() {
 
       await initBehaviorCsvFile();
       const csvPath = await getBehaviorCsvPath();
-      console.log("Behavior CSV path:", csvPath);
+      const publicCsvPath = await getPublicBehaviorCsvPath();
+      console.log("Behavior CSV app path:", csvPath);
+      console.log("Behavior CSV public path:", publicCsvPath);
       startCapture(true);
     };
 
