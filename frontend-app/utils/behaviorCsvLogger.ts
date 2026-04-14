@@ -19,8 +19,25 @@ let initialized = false;
 let publicMirrorSafUri: string | null = null;
 let attemptedPublicMirrorInSession = false;
 let writeQueue: Promise<void> = Promise.resolve();
-let rowsSinceMirrorRetry = 0;
 let pendingLines: string[] = [];
+
+/**
+ * In-memory cache of the app-local CSV content.
+ * Avoids re-reading the (growing) file from disk on every flush.
+ * Populated once during initialization and kept in sync with writes.
+ */
+let cachedAppContent: string | null = null;
+
+/**
+ * Throttle for the public-mirror full-file sync.
+ * Writing the entire file to the SAF URI every second is too expensive;
+ * we now only sync every MIRROR_SYNC_INTERVAL_MS milliseconds.
+ */
+const MIRROR_SYNC_INTERVAL_MS = 30_000;
+let lastMirrorSyncTime = 0;
+
+/** Track total rows flushed for diagnostics. */
+let totalRowsFlushed = 0;
 
 type CsvRowInput = {
   timestamp: number;
@@ -51,19 +68,31 @@ function escapeCsv(value: string) {
   return value;
 }
 
+function isSafUri(path: string) {
+  return path.startsWith("content://");
+}
+
+async function readCsvIfExists(path: string) {
+  try {
+    const content = await FileSystem.readAsStringAsync(path, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    return content;
+  } catch {
+    return null;
+  }
+}
+
 async function ensureHeader(path: string) {
-  const info = await FileSystem.getInfoAsync(path);
-  if (!info.exists) {
+  const existingContent = await readCsvIfExists(path);
+  if (existingContent === null) {
     await FileSystem.writeAsStringAsync(path, CSV_HEADER, {
       encoding: FileSystem.EncodingType.UTF8,
     });
     return;
   }
 
-  const content = await FileSystem.readAsStringAsync(path, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
-  const normalized = content.replace(/\r\n/g, "\n");
+  const normalized = existingContent.replace(/\r\n/g, "\n");
   const firstLine = normalized.split(/\n/, 1)[0];
 
   if (firstLine !== CSV_HEADER.trim()) {
@@ -73,26 +102,73 @@ async function ensureHeader(path: string) {
   }
 }
 
-async function appendLinesEnsuringFile(path: string, lines: string[]) {
+/**
+ * Populate the in-memory cache from disk (one-time, at startup).
+ * After this, all appends go through the cache — no more re-reading.
+ */
+async function loadAppContentCache() {
+  if (cachedAppContent !== null) {
+    return;
+  }
+
+  const content = await readCsvIfExists(APP_MODEL_PATH);
+  if (content === null) {
+    cachedAppContent = CSV_HEADER;
+  } else {
+    const normalized = content.replace(/\r\n/g, "\n");
+    cachedAppContent = normalized.startsWith(CSV_HEADER)
+      ? normalized
+      : `${CSV_HEADER}${normalized}`;
+  }
+
+  const lineCount = (cachedAppContent.match(/\n/g) || []).length;
+  console.log(`[BehaviorCSV] Loaded cache from disk: ${lineCount} lines`);
+}
+
+async function appendLinesEnsuringFile(lines: string[]) {
   if (lines.length === 0) {
     return;
   }
 
-  const info = await FileSystem.getInfoAsync(path);
   const contentToAppend = `${lines.join("\n")}\n`;
 
-  if (!info.exists) {
-    await FileSystem.writeAsStringAsync(path, `${CSV_HEADER}${contentToAppend}`, {
+  // Use the in-memory cache — never re-read the file.
+  if (cachedAppContent !== null) {
+    cachedAppContent += contentToAppend;
+    await FileSystem.writeAsStringAsync(APP_MODEL_PATH, cachedAppContent, {
       encoding: FileSystem.EncodingType.UTF8,
     });
     return;
   }
 
-  await ensureHeader(path);
-  const existingContent = await FileSystem.readAsStringAsync(path, {
+  // First-time fallback if cache wasn't loaded yet.
+  const existingContent = await readCsvIfExists(APP_MODEL_PATH);
+
+  if (existingContent === null) {
+    cachedAppContent = `${CSV_HEADER}${contentToAppend}`;
+  } else {
+    const normalized = existingContent.replace(/\r\n/g, "\n");
+    const withHeader = normalized.startsWith(CSV_HEADER) ? normalized : `${CSV_HEADER}${normalized}`;
+    cachedAppContent = `${withHeader}${contentToAppend}`;
+  }
+
+  await FileSystem.writeAsStringAsync(APP_MODEL_PATH, cachedAppContent, {
     encoding: FileSystem.EncodingType.UTF8,
   });
-  await FileSystem.writeAsStringAsync(path, `${existingContent}${contentToAppend}`, {
+}
+
+async function syncPublicMirrorFromAppFile() {
+  if (!publicMirrorSafUri) {
+    return;
+  }
+
+  // Use the cache if available, otherwise read from disk.
+  const content = cachedAppContent ?? (await readCsvIfExists(APP_MODEL_PATH));
+  if (content === null) {
+    return;
+  }
+
+  await FileSystem.writeAsStringAsync(publicMirrorSafUri, content, {
     encoding: FileSystem.EncodingType.UTF8,
   });
 }
@@ -142,6 +218,11 @@ async function ensureSafModelCsv(bankDirectoryUri: string) {
   );
 }
 
+/**
+ * Set up the public mirror (Download/Bank/Model.csv) via SAF.
+ * This shows a system file-picker dialog, so it must ONLY be called
+ * during initialization — NEVER inside the flush path!
+ */
 async function setupPublicMirror() {
   if (Platform.OS !== "android") {
     return;
@@ -156,6 +237,7 @@ async function setupPublicMirror() {
         publicMirrorSafUri = modelFileUri;
         await saveToSecureStore(SAF_FILE_URI_KEY, modelFileUri);
         await ensureHeader(modelFileUri);
+        console.log("[BehaviorCSV] Restored SAF mirror from stored Bank dir");
         return;
       }
       await deleteFromSecureStore(SAF_BANK_DIR_URI_KEY);
@@ -166,11 +248,13 @@ async function setupPublicMirror() {
       const storedInfo = await FileSystem.getInfoAsync(storedSafFileUri);
       if (storedInfo.exists) {
         publicMirrorSafUri = storedSafFileUri;
+        console.log("[BehaviorCSV] Restored SAF mirror from stored file URI");
         return;
       }
       await deleteFromSecureStore(SAF_FILE_URI_KEY);
     }
 
+    // This shows a blocking system dialog — only safe during init, never flush.
     let permission =
       await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync(
         DOWNLOAD_ROOT_URI
@@ -180,6 +264,7 @@ async function setupPublicMirror() {
         await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
     }
     if (!permission.granted || !permission.directoryUri) {
+      console.log("[BehaviorCSV] SAF permission denied, using app-local only");
       return;
     }
 
@@ -189,51 +274,19 @@ async function setupPublicMirror() {
     await saveToSecureStore(SAF_BANK_DIR_URI_KEY, bankDirectoryUri);
     await saveToSecureStore(SAF_FILE_URI_KEY, modelFileUri);
     await ensureHeader(modelFileUri);
-  } catch {
-    // Local app storage remains the fallback.
+    console.log("[BehaviorCSV] SAF mirror set up:", modelFileUri);
+  } catch (error) {
+    console.warn("[BehaviorCSV] SAF setup failed, using app-local only:", error);
   }
-}
-
-async function ensurePublicMirrorReady() {
-  if (!publicMirrorSafUri) {
-    return;
-  }
-
-  try {
-    const info = await FileSystem.getInfoAsync(publicMirrorSafUri);
-    if (info.exists) {
-      await ensureHeader(publicMirrorSafUri);
-      return;
-    }
-  } catch {
-    // Fall back to local app path when SAF access fails.
-  }
-
-  publicMirrorSafUri = null;
-  await deleteFromSecureStore(SAF_BANK_DIR_URI_KEY);
-  await deleteFromSecureStore(SAF_FILE_URI_KEY);
-  await setupPublicMirror();
-}
-
-async function maybeRetryPublicMirrorSetup() {
-  if (Platform.OS !== "android" || publicMirrorSafUri) {
-    return;
-  }
-
-  rowsSinceMirrorRetry += 1;
-  if (rowsSinceMirrorRetry < 25) {
-    return;
-  }
-
-  rowsSinceMirrorRetry = 0;
-  await setupPublicMirror();
 }
 
 async function ensureInitialized() {
   if (!initialized) {
     await FileSystem.makeDirectoryAsync(APP_BANK_DIR, { intermediates: true });
     await ensureHeader(APP_MODEL_PATH);
+    await loadAppContentCache();
     initialized = true;
+    console.log("[BehaviorCSV] Initialized. App path:", APP_MODEL_PATH);
   }
 
   if (
@@ -252,6 +305,11 @@ export async function initBehaviorCsvFile() {
 }
 
 export async function getBehaviorCsvPath() {
+  await ensureInitialized();
+  return APP_MODEL_PATH;
+}
+
+export async function getPublicBehaviorCsvPath() {
   await ensureInitialized();
   if (publicMirrorSafUri) {
     return publicMirrorSafUri;
@@ -293,32 +351,71 @@ export async function flushBehaviorCsvRows() {
 
       try {
         await ensureInitialized();
-        await ensurePublicMirrorReady();
-      } catch {
-        publicMirrorSafUri = null;
-        attemptedPublicMirrorInSession = false;
+      } catch (initError) {
+        console.warn("[BehaviorCSV] Init failed during flush:", initError);
+        pendingLines = [...linesToWrite, ...pendingLines];
+        return;
       }
 
+      // -----------------------------------------------------------
+      // CRITICAL: We NEVER call setupPublicMirror() here.
+      // setupPublicMirror() shows a blocking system dialog that
+      // would freeze the entire writeQueue and stop all CSV writes.
+      // The mirror is set up once during ensureInitialized().
+      // -----------------------------------------------------------
+
       try {
-        await maybeRetryPublicMirrorSetup();
+        await appendLinesEnsuringFile(linesToWrite);
+        totalRowsFlushed += linesToWrite.length;
 
-        await appendLinesEnsuringFile(APP_MODEL_PATH, linesToWrite);
+        // Log every ~500 rows so we can confirm data is growing.
+        if (totalRowsFlushed % 500 < linesToWrite.length) {
+          const cacheLines = cachedAppContent
+            ? (cachedAppContent.match(/\n/g) || []).length
+            : "?";
+          console.log(
+            `[BehaviorCSV] Flushed ${linesToWrite.length} rows (total: ${totalRowsFlushed}, file lines: ${cacheLines})`
+          );
+        }
 
-        if (publicMirrorSafUri) {
+        // Throttle public-mirror sync: only write full file every 30s.
+        // If the mirror URI is lost, we DON'T re-call setupPublicMirror.
+        const now = Date.now();
+        if (publicMirrorSafUri && now - lastMirrorSyncTime >= MIRROR_SYNC_INTERVAL_MS) {
+          lastMirrorSyncTime = now;
           try {
-            await appendLinesEnsuringFile(publicMirrorSafUri, linesToWrite);
+            await syncPublicMirrorFromAppFile();
           } catch {
+            // Mirror is broken — give up until next app restart.
+            console.warn("[BehaviorCSV] Mirror sync failed, disabling mirror");
             publicMirrorSafUri = null;
-            attemptedPublicMirrorInSession = false;
-            await deleteFromSecureStore(SAF_BANK_DIR_URI_KEY);
-            await deleteFromSecureStore(SAF_FILE_URI_KEY);
           }
         }
       } catch (error) {
+        console.warn("[BehaviorCSV] Flush error, re-queuing rows:", error);
         pendingLines = [...linesToWrite, ...pendingLines];
         throw error;
       }
     });
 
   await writeQueue;
+}
+
+/**
+ * Force an immediate sync of the public mirror, bypassing the throttle.
+ * Call this when the app is about to go to background so the user
+ * always sees up-to-date data in Download/Bank/Model.csv.
+ */
+export async function forceSyncPublicMirror() {
+  if (!publicMirrorSafUri) {
+    return;
+  }
+
+  try {
+    await syncPublicMirrorFromAppFile();
+    lastMirrorSyncTime = Date.now();
+    console.log("[BehaviorCSV] Force-synced public mirror on background");
+  } catch {
+    // Best-effort; the app file is always the source of truth.
+  }
 }

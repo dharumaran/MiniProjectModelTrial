@@ -1,7 +1,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { ensureTempInputCsvExists } = require("../utils/tempInputCsv");
+const { ensureTempInputCsvExists, writeHistoryCsvFromSession } = require("../utils/tempInputCsv");
 const { resolveModelScope } = require("../utils/modelScope");
 const { resolveModelArtifacts } = require("../utils/modelArtifacts");
 const { spawnPython, appendDependencyHint } = require("../utils/pythonRuntime");
@@ -90,6 +90,7 @@ router.get("/status", (req, res) => {
 router.post("/bootstrap", (req, res) => {
   const accountNo = req.body?.accountNo || req.headers["x-account-no"];
   const scope = resolveModelScope(accountNo);
+  const trainingSession = req.body?.trainingSession;
   const minSamplesRaw = Number(req.body?.minSamples);
   const minSamples = Number.isFinite(minSamplesRaw)
     ? Math.max(10, Math.floor(minSamplesRaw))
@@ -102,13 +103,18 @@ router.post("/bootstrap", (req, res) => {
     });
   }
 
-  const { rowCount, inputPath, historyPath, historyRowCount } = readInputRowCount(
-    accountNo
-  );
-  const effectiveRowCount = Math.max(rowCount, historyRowCount);
+  if (Array.isArray(trainingSession) && trainingSession.length > 0) {
+    const uploaded = writeHistoryCsvFromSession(trainingSession, { accountNo });
+    console.log(
+      `[model-bootstrap] history refreshed from mobile Model.csv with ${uploaded.rowCount} rows at ${uploaded.historyPath}`
+    );
+  }
+
+  const { rowCount, inputPath, historyPath, historyRowCount } = readInputRowCount(accountNo);
+  const effectiveRowCount = Math.max(historyRowCount, rowCount);
   if (effectiveRowCount < minSamples) {
     return res.status(400).json({
-      message: `Need at least ${minSamples} rows in temp/history CSV before retraining.`,
+      message: `Need at least ${minSamples} rows in uploaded Model.csv/history before retraining.`,
       inputRowCount: rowCount,
       inputPath,
       historyRowCount,
@@ -125,7 +131,7 @@ router.post("/bootstrap", (req, res) => {
     [
       "ml/retrain_tiered_from_live_session.py",
       "--input",
-      inputPath,
+      historyPath,
       "--reference",
       scope.referencePath,
       "--history",
@@ -210,7 +216,7 @@ router.post("/bootstrap", (req, res) => {
     return res.status(200).json({
       message: "Model retraining completed.",
       trainedAt: lastTrainAt,
-      inputRowCount: rowCount,
+      inputRowCount: historyRowCount,
       historyRowCount,
       artifacts: getModelArtifacts(accountNo),
       output: stdout.trim(),

@@ -1,0 +1,32 @@
+﻿Total samples: 640
+Positives: 420, Negatives: 220
+Always-positive baseline accuracy: 0.6562
+Random split positive leakage rate: 1.0000 (84/84)
+
+=== Random Split ===
+
+SVM Sequence
+train: acc=0.9980 bal_acc=0.9985 f1=0.9985 precision=1.0000 recall=0.9970 cm=[[176, 0], [1, 335]]
+test:  acc=1.0000 bal_acc=1.0000 f1=1.0000 precision=1.0000 recall=1.0000 cm=[[44, 0], [0, 84]]
+
+SVM Statistical
+train: acc=0.9980 bal_acc=0.9985 f1=0.9985 precision=1.0000 recall=0.9970 cm=[[176, 0], [1, 335]]
+test:  acc=1.0000 bal_acc=1.0000 f1=1.0000 precision=1.0000 recall=1.0000 cm=[[44, 0], [0, 84]]
+
+LSTM
+train: acc=0.5586 bal_acc=0.5108 f1=0.6637 precision=0.6637 recall=0.6637 cm=[[63, 113], [113, 223]]
+test:  acc=0.5234 bal_acc=0.4800 f1=0.6303 precision=0.6420 recall=0.6190 cm=[[15, 29], [32, 52]]
+
+=== Group Split (No Augmentation Leakage) ===
+
+SVM Sequence
+train: acc=1.0000 bal_acc=1.0000 f1=1.0000 precision=1.0000 recall=1.0000 cm=[[174, 0], [0, 395]]
+test:  acc=1.0000 bal_acc=1.0000 f1=1.0000 precision=1.0000 recall=1.0000 cm=[[46, 0], [0, 25]]
+
+SVM Statistical
+train: acc=0.9982 bal_acc=0.9987 f1=0.9987 precision=1.0000 recall=0.9975 cm=[[174, 0], [1, 394]]
+test:  acc=1.0000 bal_acc=1.0000 f1=1.0000 precision=1.0000 recall=1.0000 cm=[[46, 0], [0, 25]]
+
+LSTM
+train: acc=0.6134 bal_acc=0.7199 f1=0.6154 precision=0.9944 recall=0.4456 cm=[[173, 1], [219, 176]]
+test:  acc=1.0000 bal_acc=1.0000 f1=1.0000 precision=1.0000 recall=1.0000 cm=[[46, 0], [0, 25]]
