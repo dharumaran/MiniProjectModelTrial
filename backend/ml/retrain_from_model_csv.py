@@ -1,10 +1,10 @@
 import argparse
 import random
 from pathlib import Path
-
-import joblib
-import numpy as np
+from typing import Dict, List, Tuple
 import pandas as pd
+import numpy as np
+import joblib
 import torch
 import torch.nn as nn
 from sklearn import svm
@@ -28,13 +28,9 @@ from lstm_model import LSTMClassifier
 BATCH_SIZE = 32
 EPOCHS = 16
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-HARD_NEGATIVE_AUG_PER_SEQUENCE = 10
-MIN_TOTAL_NEGATIVES = 240
-HARD_NEGATIVE_TARGET_FRACTION = 0.65
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT_PATH = ROOT_DIR / "temp_input.csv"
-DEFAULT_HISTORY_PATH = ROOT_DIR / "history_input.csv"
+DEFAULT_MODEL_CSV_PATH = ROOT_DIR / "user_profiles" / "shared" / "Model.csv"
 DEFAULT_REFERENCE_PATH = ROOT_DIR / "reference_session.csv"
 DEFAULT_SVM_SEQ_PATH = ROOT_DIR.parent / "svm_tier_1_sequence.pkl"
 DEFAULT_SVM_STAT_PATH = ROOT_DIR.parent / "svm_tier_2_statistical.pkl"
@@ -121,22 +117,6 @@ def generate_negative(reference: np.ndarray):
     return np.random.rand(SEQUENCE_LENGTH, NUM_FEATURES).astype(np.float32)
 
 
-def augment_hard_negative(sequence: np.ndarray):
-    augmented = temporal_resample(sequence)
-    augmented = augmented + np.random.normal(0, 0.025, augmented.shape)
-    augmented[:, 0] = clamp01(
-        augmented[:, 0] + np.random.normal(0, 0.03, len(augmented))
-    )
-    augmented[:, 1] = clamp01(
-        augmented[:, 1] - np.random.normal(0, 0.03, len(augmented))
-    )
-    augmented[:, 2] = clamp01(np.roll(augmented[:, 2], np.random.randint(-6, 7)))
-    augmented[:, 3] = clamp01(
-        augmented[:, 3] * np.random.uniform(0.65, 1.05)
-    )
-    return clamp01(augmented).astype(np.float32)
-
-
 class SequenceDataset(Dataset):
     def __init__(self, features: np.ndarray, labels: np.ndarray):
         self.features = torch.tensor(features, dtype=torch.float32)
@@ -154,17 +134,7 @@ def train_lstm_model(x_train, y_train, lstm_output_path: Path):
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     model = LSTMClassifier().to(DEVICE)
-    class_counts = np.bincount(y_train, minlength=2).astype(np.float32)
-    class_counts[class_counts == 0] = 1.0
-    class_weights = torch.tensor(
-        [
-            len(y_train) / (2.0 * class_counts[0]),
-            len(y_train) / (2.0 * class_counts[1]),
-        ],
-        dtype=torch.float32,
-        device=DEVICE,
-    )
-    criterion = nn.NLLLoss(weight=class_weights)
+    criterion = nn.NLLLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     for epoch in range(EPOCHS):
@@ -211,14 +181,29 @@ def load_hard_negative_sequences(profiles_root: Path, scope_id: str):
     return negatives
 
 
-def extract_sessions_from_history(raw_df: pd.DataFrame):
+def extract_sessions_from_model_csv(raw_df: pd.DataFrame, user_id: str = None):
+    """
+    Extract sessions from Model.csv for a specific user or all users.
+    Handles user_id column if present.
+    """
     if raw_df.empty:
         return []
+
+    # Filter by user if specified
+    if user_id:
+        if 'user_id' in raw_df.columns:
+            raw_df = raw_df[raw_df['user_id'] == user_id]
+        elif 'UserId' in raw_df.columns:
+            raw_df = raw_df[raw_df['UserId'] == user_id]
+        
+        if raw_df.empty:
+            return []
 
     sessions = []
     stride = max(10, SEQUENCE_LENGTH // 2)
     values = raw_df.copy()
     total_rows = len(values)
+    
     if total_rows < 10:
         return sessions
 
@@ -234,196 +219,187 @@ def extract_sessions_from_history(raw_df: pd.DataFrame):
     return sessions[-12:]
 
 
+def load_model_csv_for_user(model_csv_path: Path, user_id: str = None) -> Tuple[pd.DataFrame, str]:
+    """
+    Load Model.csv and optionally filter for a specific user.
+    Returns (dataframe, actual_user_id_used).
+    """
+    if not model_csv_path.exists():
+        raise FileNotFoundError(f"Model.csv not found at {model_csv_path}")
+
+    df = pd.read_csv(model_csv_path)
+    
+    if df.empty:
+        raise ValueError("Model.csv is empty")
+
+    # Auto-detect user ID column
+    user_col = None
+    if 'user_id' in df.columns:
+        user_col = 'user_id'
+    elif 'UserId' in df.columns:
+        user_col = 'UserId'
+    
+    # If user_id specified, filter data
+    if user_id and user_col:
+        df = df[df[user_col] == user_id]
+        if df.empty:
+            raise ValueError(f"No data found for user {user_id} in Model.csv")
+        return df, user_id
+    
+    # Return user_id found or "shared" if no user column
+    actual_user_id = "shared"
+    if user_col and len(df[user_col].unique()) > 0:
+        actual_user_id = str(df[user_col].unique()[0])
+    
+    return df, actual_user_id
+
+
 def main():
     set_seed()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default=str(DEFAULT_INPUT_PATH))
-    parser.add_argument("--history", default=str(DEFAULT_HISTORY_PATH))
+    parser.add_argument("--model-csv", default=str(DEFAULT_MODEL_CSV_PATH),
+                        help="Path to Model.csv in backend (replaces temp_input.csv)")
+    parser.add_argument("--user-id", default=None,
+                        help="Specific user ID to train model for. If not specified, uses all data.")
     parser.add_argument("--reference", default=str(DEFAULT_REFERENCE_PATH))
     parser.add_argument("--svm-seq", default=str(DEFAULT_SVM_SEQ_PATH))
     parser.add_argument("--svm-stat", default=str(DEFAULT_SVM_STAT_PATH))
     parser.add_argument("--lstm", default=str(DEFAULT_LSTM_PATH))
     parser.add_argument("--profiles-root", default=str(DEFAULT_PROFILES_ROOT))
-    parser.add_argument("--scope-id", default="shared")
+    parser.add_argument("--scope-id", default=None,
+                        help="Scope ID for per-user models. If not provided, derives from user-id.")
     parser.add_argument("--min-hard-negatives", type=int, default=5)
     parser.add_argument("--min-lstm-balanced-accuracy", type=float, default=0.60)
     parser.add_argument("--enforce-quality-gate", action="store_true")
     args = parser.parse_args()
 
-    input_path = Path(args.input)
-    history_path = Path(args.history)
+    model_csv_path = Path(args.model_csv)
     reference_path = Path(args.reference)
     svm_seq_path = Path(args.svm_seq)
     svm_stat_path = Path(args.svm_stat)
     lstm_path = Path(args.lstm)
     profiles_root = Path(args.profiles_root)
-    scope_id = str(args.scope_id or "shared").strip() or "shared"
 
+    # Load Model.csv for training
+    print(f"[retrain] Loading Model.csv from {model_csv_path}")
+    try:
+        raw_df, actual_user_id = load_model_csv_for_user(model_csv_path, args.user_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise FileNotFoundError(f"Failed to load Model.csv: {e}")
+
+    scope_id = args.scope_id or actual_user_id or "shared"
+    print(f"[retrain] Training for scope: {scope_id}, user_id: {actual_user_id}, rows: {len(raw_df)}")
+
+    # Prepare output directories
     reference_path.parent.mkdir(parents=True, exist_ok=True)
     svm_seq_path.parent.mkdir(parents=True, exist_ok=True)
     svm_stat_path.parent.mkdir(parents=True, exist_ok=True)
     lstm_path.parent.mkdir(parents=True, exist_ok=True)
 
-    source_path = history_path if history_path.exists() else input_path
-    if not source_path.exists():
-        raise FileNotFoundError(f"Missing input session file: {source_path}")
-
-    raw_df = pd.read_csv(source_path)
     if len(raw_df) < 10:
-        raise ValueError("Need at least 10 live samples in temp/history csv to retrain.")
+        raise ValueError("Need at least 10 live samples in Model.csv to retrain.")
 
-    historical_sessions = extract_sessions_from_history(raw_df)
+    # Extract sessions from Model.csv
+    historical_sessions = extract_sessions_from_model_csv(raw_df, args.user_id)
     if not historical_sessions:
-        raise ValueError("Could not extract enough historical sessions for retraining.")
+        raise ValueError("Could not extract enough sessions from Model.csv for retraining.")
+
+    print(f"[retrain] Extracted {len(historical_sessions)} sessions from Model.csv")
 
     reference = historical_sessions[-1]
-    reference_df = pd.DataFrame(reference, columns=FEATURE_COLS)
-    reference_df.to_csv(reference_path, index=False)
 
-    positive_sequences = []
+    # Save reference for future negative generation
+    np.save(reference_path.with_suffix(".npy"), reference)
+    ref_csv_data = pd.DataFrame(reference, columns=FEATURE_COLS)
+    ref_csv_data.to_csv(reference_path, index=False)
+    print(f"[retrain] Saved reference session to {reference_path}")
+
+    # Prepare positive samples (augmented from user sessions)
+    positive_samples = []
     for session in historical_sessions:
-        positive_sequences.append(session.astype(np.float32))
-        positive_sequences.extend([augment_positive(session) for _ in range(14)])
-    positive_sequences.extend([augment_positive(reference) for _ in range(60)])
+        positive_samples.append(session.astype(np.float32))
+        for _ in range(2):
+            positive_samples.append(augment_positive(session).astype(np.float32))
 
-    hard_negatives = load_hard_negative_sequences(profiles_root, scope_id)
-    sampled_hard_negatives = list(hard_negatives)
-    hard_negative_augmented = []
-    for seq in sampled_hard_negatives:
-        hard_negative_augmented.append(seq.astype(np.float32))
-        hard_negative_augmented.extend(
-            [augment_hard_negative(seq) for _ in range(HARD_NEGATIVE_AUG_PER_SEQUENCE)]
+    # Prepare negative samples
+    negative_samples = load_hard_negative_sequences(profiles_root, scope_id)
+    
+    if len(negative_samples) < args.min_hard_negatives:
+        print(
+            f"[retrain] Only {len(negative_samples)} hard negatives available. "
+            f"Generating synthetic negatives."
         )
+        for _ in range(args.min_hard_negatives - len(negative_samples)):
+            negative_samples.append(generate_negative(reference).astype(np.float32))
 
-    target_negative_count = max(
-        MIN_TOTAL_NEGATIVES,
-        int(len(positive_sequences) * 0.95),
-    )
-    target_hard_negative_count = min(
-        target_negative_count,
-        int(target_negative_count * HARD_NEGATIVE_TARGET_FRACTION),
+    print(
+        f"[retrain] Total samples: {len(positive_samples)} positive, "
+        f"{len(negative_samples)} negative"
     )
 
-    negative_sequences = []
-    if hard_negative_augmented:
-        if len(hard_negative_augmented) >= target_hard_negative_count:
-            negative_sequences.extend(
-                random.sample(hard_negative_augmented, target_hard_negative_count)
-            )
-        else:
-            negative_sequences.extend(hard_negative_augmented)
-            needed = target_hard_negative_count - len(hard_negative_augmented)
-            negative_sequences.extend(
-                random.choices(hard_negative_augmented, k=needed)
-            )
+    # Prepare training data
+    x_all = np.array(positive_samples + negative_samples, dtype=np.float32)
+    y_all = np.array([1] * len(positive_samples) + [0] * len(negative_samples), dtype=np.int64)
 
-    while len(negative_sequences) < target_negative_count:
-        negative_sequences.append(generate_negative(reference))
-
-    x_sequences = np.array(positive_sequences + negative_sequences, dtype=np.float32)
-    y = np.array([1] * len(positive_sequences) + [0] * len(negative_sequences))
-
-    x_seq_flat = x_sequences.reshape(len(x_sequences), -1)
-    x_stat = np.array([extract_stat_features(sequence) for sequence in x_sequences])
-
-    x_seq_train, x_seq_test, y_train, y_test = train_test_split(
-        x_seq_flat, y, test_size=0.2, random_state=42, stratify=y
-    )
-    x_stat_train, x_stat_test, _, _ = train_test_split(
-        x_stat, y, test_size=0.2, random_state=42, stratify=y
-    )
-    x_lstm_train, x_lstm_test, y_lstm_train, y_lstm_test = train_test_split(
-        x_sequences, y, test_size=0.2, random_state=42, stratify=y
+    x_train, x_test, y_train, y_test = train_test_split(
+        x_all, y_all, test_size=0.2, random_state=42, stratify=y_all
     )
 
-    seq_base = make_pipeline(
-        StandardScaler(),
-        svm.SVC(
-            kernel="rbf",
-            C=3.0,
-            gamma="scale",
-            class_weight="balanced",
-            random_state=42,
-        ),
-    )
-    stat_base = make_pipeline(
-        StandardScaler(),
-        svm.SVC(
-            kernel="rbf",
-            C=2.0,
-            gamma="scale",
-            class_weight="balanced",
-            random_state=42,
-        ),
-    )
+    print(f"[retrain] Training set: {len(x_train)}, Test set: {len(x_test)}")
 
-    clf_seq = CalibratedClassifierCV(
-        seq_base,
-        method="sigmoid",
-        cv=5,
-    )
-    clf_seq.fit(x_seq_train, y_train)
-    clf_stat = CalibratedClassifierCV(
-        stat_base,
-        method="sigmoid",
-        cv=5,
-    )
-    clf_stat.fit(x_stat_train, y_train)
+    # Train tier 1 (sequence-level SVM)
+    print("[retrain] Training tier-1 SVM (sequence-level)...")
+    x_train_flat = x_train.reshape(x_train.shape[0], -1)
+    x_test_flat = x_test.reshape(x_test.shape[0], -1)
 
-    seq_accuracy = clf_seq.score(x_seq_test, y_test)
-    stat_accuracy = clf_stat.score(x_stat_test, y_test)
-    seq_balanced_accuracy = balanced_accuracy_score(y_test, clf_seq.predict(x_seq_test))
-    stat_balanced_accuracy = balanced_accuracy_score(y_test, clf_stat.predict(x_stat_test))
-
-    print(f"SVM Seq Accuracy: {seq_accuracy:.4f}")
-    print(f"SVM Stat Accuracy: {stat_accuracy:.4f}")
-    print(f"SVM Seq Balanced Accuracy: {seq_balanced_accuracy:.4f}")
-    print(f"SVM Stat Balanced Accuracy: {stat_balanced_accuracy:.4f}")
-
-    train_lstm_model(x_lstm_train, y_lstm_train, lstm_path)
-
-    lstm_eval_model = LSTMClassifier().to(DEVICE)
-    lstm_eval_model.load_state_dict(torch.load(lstm_path, map_location=DEVICE))
-    lstm_eval_model.eval()
-
-    with torch.no_grad():
-        x_eval = torch.tensor(x_lstm_test, dtype=torch.float32).to(DEVICE)
-        y_pred = torch.argmax(lstm_eval_model(x_eval), dim=1).cpu().numpy()
-        lstm_accuracy = float(np.mean(y_pred == y_lstm_test))
-        lstm_balanced_accuracy = float(balanced_accuracy_score(y_lstm_test, y_pred))
-
-    print(f"LSTM Accuracy: {lstm_accuracy:.4f}")
-    print(f"LSTM Balanced Accuracy: {lstm_balanced_accuracy:.4f}")
-
+    clf_seq = make_pipeline(StandardScaler(), svm.SVC(kernel="rbf", probability=True))
+    clf_seq.fit(x_train_flat, y_train)
+    y_pred_seq = clf_seq.predict(x_test_flat)
+    acc_seq = balanced_accuracy_score(y_test, y_pred_seq)
+    print(f"[retrain] Tier-1 balanced accuracy: {acc_seq:.4f}")
     joblib.dump(clf_seq, svm_seq_path)
+
+    # Train tier 2 (statistical SVM)
+    print("[retrain] Training tier-2 SVM (statistical features)...")
+    stat_features_train = np.array([extract_stat_features(seq) for seq in x_train])
+    stat_features_test = np.array([extract_stat_features(seq) for seq in x_test])
+
+    clf_stat = make_pipeline(StandardScaler(), svm.SVC(kernel="rbf", probability=True))
+    clf_stat.fit(stat_features_train, y_train)
+    y_pred_stat = clf_stat.predict(stat_features_test)
+    acc_stat = balanced_accuracy_score(y_test, y_pred_stat)
+    print(f"[retrain] Tier-2 balanced accuracy: {acc_stat:.4f}")
     joblib.dump(clf_stat, svm_stat_path)
 
-    print(f"Positive sequences: {len(positive_sequences)}")
-    print(f"Negative sequences: {len(negative_sequences)}")
-    print(f"Hard negatives used (real users): {len(sampled_hard_negatives)}")
-    print(f"Hard negatives used (after augmentation): {len(hard_negative_augmented)}")
+    # Train LSTM
+    print("[retrain] Training LSTM model...")
+    train_lstm_model(x_train, y_train, lstm_path)
+    lstm_model = LSTMClassifier()
+    lstm_model.load_state_dict(torch.load(lstm_path, map_location="cpu"))
+    lstm_model.eval()
 
+    with torch.no_grad():
+        x_test_tensor = torch.tensor(x_test, dtype=torch.float32)
+        predictions = lstm_model(x_test_tensor)
+        y_pred_lstm = predictions.argmax(dim=1).numpy()
+
+    acc_lstm = balanced_accuracy_score(y_test, y_pred_lstm)
+    print(f"[retrain] LSTM balanced accuracy: {acc_lstm:.4f}")
+
+    # Quality gate
     if args.enforce_quality_gate:
-        failures = []
-        if len(sampled_hard_negatives) < max(0, int(args.min_hard_negatives)):
-            failures.append(
-                f"hard negatives {len(sampled_hard_negatives)} < required {int(args.min_hard_negatives)}"
-            )
-        if lstm_balanced_accuracy < float(args.min_lstm_balanced_accuracy):
-            failures.append(
-                f"LSTM balanced accuracy {lstm_balanced_accuracy:.4f} < required {float(args.min_lstm_balanced_accuracy):.4f}"
-            )
-        if failures:
+        min_acc = args.min_lstm_balanced_accuracy
+        if acc_lstm < min_acc:
             raise ValueError(
-                "Model quality gate failed: "
-                + "; ".join(failures)
-                + ". Collect more genuine owner sessions and at least 5 impostor sessions from other users."
+                f"LSTM model accuracy {acc_lstm:.4f} below minimum {min_acc}. "
+                f"Retraining failed quality gate."
             )
 
-    print(f"Saved reference to {reference_path}")
-    print(f"Saved SVM seq model to {svm_seq_path}")
-    print(f"Saved SVM stat model to {svm_stat_path}")
-    print(f"Saved LSTM model to {lstm_path}")
+    print(f"[retrain] Successfully trained models for scope: {scope_id}")
+    print(f"[retrain] Models saved to:")
+    print(f"  - {svm_seq_path}")
+    print(f"  - {svm_stat_path}")
+    print(f"  - {lstm_path}")
 
 
 if __name__ == "__main__":

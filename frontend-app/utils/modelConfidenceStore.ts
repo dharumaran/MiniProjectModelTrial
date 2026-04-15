@@ -2,6 +2,7 @@ export interface ModelConfidenceSnapshot {
   svm1_score: number | null;
   svm2_score: number | null;
   lstm_score: number | null;
+  lstm_used: boolean | null;
   risk: string | null;
   sampleCount: number;
   totalSamples: number;
@@ -13,6 +14,7 @@ const initialSnapshot: ModelConfidenceSnapshot = {
   svm1_score: null,
   svm2_score: null,
   lstm_score: null,
+  lstm_used: null,
   risk: null,
   sampleCount: 0,
   totalSamples: 0,
@@ -98,7 +100,7 @@ export function setModelConfidenceSampleCount(
 export function setModelConfidence(
   next: Pick<
     ModelConfidenceSnapshot,
-    "svm1_score" | "svm2_score" | "lstm_score" | "risk"
+    "svm1_score" | "svm2_score" | "lstm_score" | "lstm_used" | "risk"
   >
 ) {
   const calibratedSvm1 = smoothAgainstPrevious(
@@ -115,18 +117,22 @@ export function setModelConfidence(
     ),
     snapshot.svm2_score
   );
-  const calibratedLstm = smoothAgainstPrevious(
-    blendBySampleReliability(
-      calibrateScore(next.lstm_score ?? 0.5),
-      snapshot.sampleCount
-    ),
-    snapshot.lstm_score
-  );
+  const isLstmUsed = next.lstm_used !== false;
+  const calibratedLstm = isLstmUsed
+    ? smoothAgainstPrevious(
+        blendBySampleReliability(
+          calibrateScore(next.lstm_score ?? 0.5),
+          snapshot.sampleCount
+        ),
+        snapshot.lstm_score
+      )
+    : 0;
 
   snapshot = {
     svm1_score: calibratedSvm1,
     svm2_score: calibratedSvm2,
     lstm_score: calibratedLstm,
+    lstm_used: next.lstm_used ?? null,
     risk: next.risk,
     sampleCount: snapshot.sampleCount,
     totalSamples: snapshot.totalSamples,

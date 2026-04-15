@@ -22,6 +22,7 @@ interface ModelConfidenceResponse {
   svm1_score: number;
   svm2_score: number;
   lstm_score: number;
+  lstm_used?: boolean;
   risk: string;
 }
 
@@ -120,6 +121,7 @@ export default function useContinuousModelScoring() {
                 svm1_score: response.svm1_score,
                 svm2_score: response.svm2_score,
                 lstm_score: response.lstm_score,
+                lstm_used: response.lstm_used,
                 risk: response.risk,
               })
             );

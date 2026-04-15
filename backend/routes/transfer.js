@@ -110,10 +110,7 @@ router.post("/", async (req, res) => {
     const note = description ? String(description).trim() : "UPI transfer";
     const now = new Date();
 
-    sender.balance -= parsedAmount;
-    receiver.balance += parsedAmount;
-
-    sender.transactions.unshift({
+    const senderTxn = {
       date: now,
       amount: parsedAmount,
       description: note,
@@ -131,9 +128,9 @@ router.post("/", async (req, res) => {
         receiver.accountNo ||
         receiver.phone,
       upiId: receiver.upiId || "",
-    });
+    };
 
-    receiver.transactions.unshift({
+    const receiverTxn = {
       date: now,
       amount: parsedAmount,
       description: note,
@@ -151,18 +148,45 @@ router.post("/", async (req, res) => {
         sender.accountNo ||
         sender.phone,
       upiId: sender.upiId || "",
-    });
+    };
 
-    await sender.save();
-    await receiver.save();
+    const updatedSender = await User.findOneAndUpdate(
+      {
+        _id: sender._id,
+        balance: { $gte: parsedAmount },
+      },
+      {
+        $inc: { balance: -parsedAmount },
+        $push: { transactions: { $each: [senderTxn], $position: 0 } },
+      },
+      {
+        new: true,
+      }
+    );
+
+    if (!updatedSender) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Transfer could not be completed due to a concurrent balance update. Please retry.",
+      });
+    }
+
+    await User.updateOne(
+      { _id: receiver._id },
+      {
+        $inc: { balance: parsedAmount },
+        $push: { transactions: { $each: [receiverTxn], $position: 0 } },
+      }
+    );
 
     return res.status(200).json({
       success: true,
       message: "Transfer successful.",
       sender: {
-        accountNo: sender.accountNo,
-        balance: sender.balance,
-        transactions: sender.transactions,
+        accountNo: updatedSender.accountNo,
+        balance: updatedSender.balance,
+        transactions: updatedSender.transactions,
       },
       receiver: {
         accountNo: receiver.accountNo,

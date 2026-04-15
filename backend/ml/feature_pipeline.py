@@ -22,6 +22,11 @@ def pad_or_trim(arr: np.ndarray):
 
 def normalize_session(df: pd.DataFrame, renormalize: bool = False):
     frame = df.copy()
+    
+    # Handle if 'UserId' column exists (new CSV format with user tracking)
+    if 'UserId' in frame.columns:
+        frame = frame.drop(columns=['UserId'])
+    
     for column in FEATURE_COLS:
         if column not in frame:
             frame[column] = 0.0

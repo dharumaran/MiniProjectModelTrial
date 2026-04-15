@@ -9,23 +9,30 @@ const LEGACY_DEFAULTS = {
   lstmPath: path.join(ROOT_DIR, "ml", "lstm_classifier.pt"),
 };
 
-function resolveModelArtifacts(accountNo) {
+function resolveModelArtifacts(accountNo, options = {}) {
   const scoped = resolveModelScope(accountNo);
   const shared = resolveModelScope();
+  const strictScope = options.strictScope === true;
 
   const selectExisting = (candidates) => candidates.find((candidate) => fs.existsSync(candidate));
 
-  const svmSeqPath = selectExisting([
-    scoped.svmSeqPath,
-    shared.svmSeqPath,
-    LEGACY_DEFAULTS.svmSeqPath,
-  ]);
-  const svmStatPath = selectExisting([
-    scoped.svmStatPath,
-    shared.svmStatPath,
-    LEGACY_DEFAULTS.svmStatPath,
-  ]);
-  const lstmPath = selectExisting([scoped.lstmPath, shared.lstmPath, LEGACY_DEFAULTS.lstmPath]);
+  const svmSeqPath = strictScope
+    ? (fs.existsSync(scoped.svmSeqPath) ? scoped.svmSeqPath : null)
+    : selectExisting([
+        scoped.svmSeqPath,
+        shared.svmSeqPath,
+        LEGACY_DEFAULTS.svmSeqPath,
+      ]);
+  const svmStatPath = strictScope
+    ? (fs.existsSync(scoped.svmStatPath) ? scoped.svmStatPath : null)
+    : selectExisting([
+        scoped.svmStatPath,
+        shared.svmStatPath,
+        LEGACY_DEFAULTS.svmStatPath,
+      ]);
+  const lstmPath = strictScope
+    ? (fs.existsSync(scoped.lstmPath) ? scoped.lstmPath : null)
+    : selectExisting([scoped.lstmPath, shared.lstmPath, LEGACY_DEFAULTS.lstmPath]);
 
   const missing = [];
   if (!svmSeqPath) {
@@ -40,6 +47,7 @@ function resolveModelArtifacts(accountNo) {
 
   return {
     scopeId: scoped.scopeId,
+    strictScope,
     svmSeqPath,
     svmStatPath,
     lstmPath,
