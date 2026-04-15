@@ -3,7 +3,7 @@ const path = require("path");
 const { resolveModelScope } = require("./modelScope");
 
 const TEMP_INPUT_PATH = path.join(__dirname, "../ml/user_profiles/shared/temp_input.csv");
-const HEADER = "X,Y,Pressure,Duration,Orientation,Size\n";
+const HEADER = "UserId,X,Y,Pressure,Duration,Orientation,Size\n";
 const MAX_HISTORY_ROWS = 5000;
 
 function resolveTempInputPath(options = {}) {
@@ -110,6 +110,14 @@ function isFeatureRow(row) {
       Object.prototype.hasOwnProperty.call(row, key)
     )
   );
+}
+
+function sanitizeAccountNo(accountNo) {
+  const raw = String(accountNo || "").trim();
+  if (!raw) {
+    return "unknown_user";
+  }
+  return raw.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 128) || "unknown_user";
 }
 
 function normalizeSession(session) {
@@ -226,7 +234,6 @@ function writeTempInputCsv(session, options = {}) {
   const normalizedSession = normalizeSession(session);
   if (!normalizedSession.length) {
     return {
-      normalizedSession,
       rowCount: 0,
       inputPath: tempInputPath,
       scopeId: scope.scopeId,
@@ -242,7 +249,6 @@ function writeTempInputCsv(session, options = {}) {
   appendRowsToHistoryCsv(scope.historyPath, rows);
 
   return {
-    normalizedSession,
     rowCount: normalizedSession.length,
     inputPath: tempInputPath,
     historyPath: scope.historyPath,

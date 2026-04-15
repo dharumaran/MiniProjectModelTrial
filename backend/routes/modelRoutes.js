@@ -55,10 +55,13 @@ function readInputRowCount(accountNo) {
 }
 
 function getModelArtifacts(accountNo) {
-  const artifacts = resolveModelArtifacts(accountNo);
+  const artifacts = resolveModelArtifacts(accountNo, {
+    strictScope: Boolean(accountNo),
+  });
 
   return {
     scopeId: artifacts.scopeId,
+    strictScope: artifacts.strictScope,
     svmSeqPath: artifacts.svmSeqPath || null,
     svmSeqModifiedAt: toIsoOrNull(artifacts.svmSeqPath),
     svmStatPath: artifacts.svmStatPath || null,
@@ -95,6 +98,17 @@ router.post("/bootstrap", (req, res) => {
   const minSamples = Number.isFinite(minSamplesRaw)
     ? Math.max(10, Math.floor(minSamplesRaw))
     : DEFAULT_MIN_SAMPLES;
+  const enforceQualityGate = req.body?.enforceQualityGate === true;
+  const rebuildFromScratch = req.body?.rebuildFromScratch === true;
+  const minHardNegativesRaw = Number(req.body?.minHardNegatives);
+  const minHardNegatives = Number.isFinite(minHardNegativesRaw)
+    ? Math.max(0, Math.floor(minHardNegativesRaw))
+    : 3;
+  const minLstmBalancedAccuracyRaw = Number(req.body?.minLstmBalancedAccuracy);
+  const minLstmBalancedAccuracy = Number.isFinite(minLstmBalancedAccuracyRaw)
+    ? Math.max(0, Math.min(1, minLstmBalancedAccuracyRaw))
+    : 0.7;
+  const removedArtifacts = [];
 
   if (trainingInProgress) {
     return res.status(409).json({
@@ -127,35 +141,58 @@ router.post("/bootstrap", (req, res) => {
   lastTrainStatus = "training";
   lastTrainError = null;
 
-  const child = spawnPython(
-    [
-      "ml/retrain_tiered_from_live_session.py",
-      "--input",
-      historyPath,
-      "--reference",
-      scope.referencePath,
-      "--history",
-      historyPath,
-      "--svm-seq",
+  if (rebuildFromScratch) {
+    const removablePaths = [
       scope.svmSeqPath,
-      "--svm-stat",
       scope.svmStatPath,
-      "--lstm",
       scope.lstmPath,
-      "--profiles-root",
-      path.join(ROOT_DIR, "ml", "user_profiles"),
-      "--scope-id",
-      scope.scopeId,
-      "--enforce-quality-gate",
-      "--min-hard-negatives",
-      "5",
-      "--min-lstm-balanced-accuracy",
-      "0.60",
-    ],
-    {
-      cwd: ROOT_DIR,
+      scope.referencePath,
+    ];
+    for (const candidate of removablePaths) {
+      try {
+        if (fs.existsSync(candidate)) {
+          fs.unlinkSync(candidate);
+          removedArtifacts.push(candidate);
+        }
+      } catch (error) {
+        console.warn(`[model-bootstrap] failed to remove stale artifact ${candidate}: ${error.message}`);
+      }
     }
-  );
+    console.log(
+      `[model-bootstrap] rebuildFromScratch enabled for scope=${scope.scopeId}. Removed ${removedArtifacts.length} stale artifacts.`
+    );
+  }
+
+  const bootstrapArgs = [
+    "ml/retrain_tiered_from_live_session.py",
+    "--input",
+    historyPath,
+    "--reference",
+    scope.referencePath,
+    "--history",
+    historyPath,
+    "--svm-seq",
+    scope.svmSeqPath,
+    "--svm-stat",
+    scope.svmStatPath,
+    "--lstm",
+    scope.lstmPath,
+    "--profiles-root",
+    path.join(ROOT_DIR, "ml", "user_profiles"),
+    "--scope-id",
+    scope.scopeId,
+    "--min-hard-negatives",
+    String(minHardNegatives),
+    "--min-lstm-balanced-accuracy",
+    String(minLstmBalancedAccuracy),
+  ];
+  if (enforceQualityGate) {
+    bootstrapArgs.push("--enforce-quality-gate");
+  }
+
+  const child = spawnPython(bootstrapArgs, {
+    cwd: ROOT_DIR,
+  });
 
   let stdout = "";
   let stderr = "";
@@ -218,6 +255,13 @@ router.post("/bootstrap", (req, res) => {
       trainedAt: lastTrainAt,
       inputRowCount: historyRowCount,
       historyRowCount,
+      rebuildFromScratch,
+      removedArtifacts,
+      qualityGate: {
+        enforced: enforceQualityGate,
+        minHardNegatives,
+        minLstmBalancedAccuracy,
+      },
       artifacts: getModelArtifacts(accountNo),
       output: stdout.trim(),
       scopeId: scope.scopeId,

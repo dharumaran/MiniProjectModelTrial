@@ -32,6 +32,7 @@ app.use("/api/transfer", require("./routes/transfer"));
 app.use("/api/predict", require("./routes/predict"));
 app.use("/api/record-session", require("./routes/recordSession"));
 app.use("/api/model", require("./routes/modelRoutes"));
+app.use("/api/ml", require("./routes/modelSync"));
 
 const PORT = process.env.PORT || 5000;
 if (require.main === module) {

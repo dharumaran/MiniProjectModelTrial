@@ -49,7 +49,17 @@ function chooseRuntime() {
 
 function spawnPython(scriptArgs, options = {}) {
   const runtime = chooseRuntime();
-  return spawn(runtime.command, [...runtime.args, ...scriptArgs], options);
+  const mergedEnv = {
+    ...process.env,
+    ...(options.env || {}),
+    // Avoid Windows cp1252 stdout crashes when scripts print Unicode.
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
+  };
+  return spawn(runtime.command, [...runtime.args, ...scriptArgs], {
+    ...options,
+    env: mergedEnv,
+  });
 }
 
 function buildMissingModuleHint(moduleName = "required Python package") {
